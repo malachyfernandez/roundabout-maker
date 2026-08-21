@@ -10,6 +10,7 @@ type CenterlineProps = {
   arm: ArmConfig;
   zoom: number;
   selected: boolean;
+  laneOnThisArmSelected: boolean;
 };
 
 function makeSpline(arm: ArmConfig): CatmullRomSpline {
@@ -33,7 +34,7 @@ function projectOntoSpline(spline: CatmullRomSpline, point: Vec2) {
   return best.t;
 }
 
-const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected }) => {
+const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, laneOnThisArmSelected }) => {
   const committedConfig = useEditorStore(state => state.committedConfig);
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const commitDraft = useEditorStore(state => state.commitDraft);
@@ -82,14 +83,17 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected }) => {
     event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
+  const showSpline = selected || !laneOnThisArmSelected;
+
   return (
     <g>
-      {selected && (
+      {showSpline && (
         <path
           d={d}
           fill="none"
-          stroke="#2563eb"
-          strokeWidth={2 * zoom}
+          stroke={selected ? '#2563eb' : 'rgba(37, 99, 235, 0.42)'}
+          strokeWidth={(selected ? 2 : 1.25) * zoom}
+          strokeDasharray={selected ? undefined : `${5 * zoom} ${5 * zoom}`}
           pointerEvents="none"
         />
       )}
@@ -129,6 +133,7 @@ export const CenterlineLayer: React.FC<Props> = ({ config, zoom }) => {
           arm={arm}
           zoom={zoom}
           selected={selection?.kind === 'arm' && selection.armId === arm.id}
+          laneOnThisArmSelected={selection?.kind === 'lane' && selection.armId === arm.id}
         />
       ))}
     </g>
