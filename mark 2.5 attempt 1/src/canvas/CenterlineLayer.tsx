@@ -119,7 +119,7 @@ type Props = {
 export const CenterlineLayer: React.FC<Props> = ({ config, zoom }) => {
   const selection = useEditorStore(state => state.selection);
   const viewMode = useEditorStore(state => state.viewMode);
-  if (viewMode !== 'preview') return null;
+  if (viewMode === 'rendered') return null;
   return (
     <g>
       {config.arms.map(arm => (

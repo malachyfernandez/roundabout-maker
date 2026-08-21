@@ -41,7 +41,7 @@ interface EditorState {
   selection: SelectionTarget | null;
   hovered: SelectionTarget | null;
   drag: DragState | null;
-  viewMode: 'preview' | 'rendered';
+  viewMode: 'segment' | 'editor' | 'rendered';
   featureFlags: FeatureFlags;
   activeTool: ActiveTool;
   pendingRoadStart: Vec2 | null;
@@ -52,7 +52,7 @@ interface EditorState {
   setSelection: (sel: SelectionTarget | null) => void;
   setHovered: (sel: SelectionTarget | null) => void;
   setDrag: (drag: DragState | null) => void;
-  setViewMode: (mode: 'preview' | 'rendered') => void;
+  setViewMode: (mode: 'segment' | 'editor' | 'rendered') => void;
   setFeatureFlag: (key: keyof FeatureFlags, enabled: boolean) => void;
   setActiveTool: (tool: ActiveTool) => void;
   setPendingRoadStart: (point: Vec2 | null) => void;
@@ -90,7 +90,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   selection: null,
   hovered: null,
   drag: null,
-  viewMode: 'preview',
+  viewMode: 'editor',
   featureFlags: getStoredFeatureFlags(),
   activeTool: 'select',
   pendingRoadStart: null,
@@ -136,7 +136,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     for (const key of ['roundabout_bg', 'roundabout_bgOp', 'roundabout_bgSize', 'roundabout_pan', 'roundabout_zoom']) {
       localStorage.removeItem(key);
     }
-    set({ committedConfig: config, draftConfig: null, selection: null, hovered: null, drag: null, viewMode: 'preview', activeTool: 'select', pendingRoadStart: null, pendingBypassSource: null });
+    set({ committedConfig: config, draftConfig: null, selection: null, hovered: null, drag: null, viewMode: 'editor', activeTool: 'select', pendingRoadStart: null, pendingBypassSource: null });
     window.dispatchEvent(new Event('roundabout-reset'));
   }
 }));

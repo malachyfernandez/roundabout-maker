@@ -292,7 +292,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
           </g>
         )}
         <GeometryLayer config={draftConfig || committedConfig} segments={segments} zoom={zoom} />
-        {renderedMarkingsEnabled && viewMode === 'rendered' && (
+        {renderedMarkingsEnabled && viewMode !== 'segment' && (
           <MarkingsLayer config={draftConfig || committedConfig} segments={segments} zoom={zoom} />
         )}
         <CenterlineLayer config={draftConfig || committedConfig} zoom={zoom} />

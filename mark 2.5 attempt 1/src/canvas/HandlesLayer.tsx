@@ -55,7 +55,7 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
     ? segments.find(segment => segment.routeId === `bypass_${selectedBypass.id}` && segment.kind === 'bypass-curve')
     : null;
 
-  if (viewMode !== 'preview') return null;
+  if (viewMode === 'rendered') return null;
 
   const laneRingId = selectedLane && activeArm
     ? selectedLane.dir === 'in'

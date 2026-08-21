@@ -101,7 +101,7 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
       <p style={{ marginTop: 24, color: '#666', fontStyle: 'italic' }}>
         Click on the island, rings, or lanes in the viewport to edit their specific properties.
       </p>
-      {viewMode === 'rendered' && renderedMarkingsEnabled && (
+      {viewMode !== 'segment' && renderedMarkingsEnabled && (
         <details open style={{ marginTop: 18, padding: 10, background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 8 }}>
           <summary data-tooltip="Show the plain-language rules that generate the visible pavement markings." style={{ cursor: 'pointer', fontWeight: 700 }}>Rendered marking rules</summary>
           <p style={{ margin: '7px 0', color: '#64748b', fontSize: 11 }}>MUTCD-inspired schematic rules. Jurisdiction-specific engineering review is still required for construction use.</p>
@@ -384,10 +384,11 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
           </button>
           <select 
             value={useEditorStore(state => state.viewMode)}
-            onChange={e => useEditorStore.getState().setViewMode(e.target.value as any)}
+            onChange={e => useEditorStore.getState().setViewMode(e.target.value as 'segment' | 'editor' | 'rendered')}
             style={{ fontSize: 12, padding: '2px 4px' }}
           >
-            <option value="preview">Preview Mode</option>
+            <option value="segment">Segment Mode</option>
+            <option value="editor">Editor Mode</option>
             <option value="rendered">Rendered Mode</option>
           </select>
           {selection && (

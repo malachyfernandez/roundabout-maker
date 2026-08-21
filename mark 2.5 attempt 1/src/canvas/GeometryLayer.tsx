@@ -143,7 +143,7 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
       isHovered = hovered?.kind === 'ring' && hovered.ringId === seg.source.ringId;
     }
 
-    const isRendered = viewMode === 'rendered';
+    const isRendered = viewMode !== 'segment';
     const laneSource = seg.source.kind === 'lane' ? seg.source : null;
     const isBypassCandidate = activeTool === 'connect-bypass'
       && pendingBypassSource
