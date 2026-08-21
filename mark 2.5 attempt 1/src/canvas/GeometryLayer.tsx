@@ -212,11 +212,11 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
           />
         )}
         {/* Rendered Selection Overlay */}
-        {isRendered && (isSelected || isHovered) && (
+        {isRendered && (isSelected || isRoadSelected || isHovered) && (
           <path
             d={d}
-            fill="#fff"
-            opacity={isSelected ? 0.3 : 0.15}
+            fill={isSelected ? '#facc15' : isRoadSelected ? '#60a5fa' : '#fff'}
+            opacity={isSelected ? 0.28 : isRoadSelected ? 0.12 : 0.15}
             pointerEvents="none"
           />
         )}

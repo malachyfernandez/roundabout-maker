@@ -112,12 +112,17 @@ export const RoadProfileEditor: React.FC<Props> = ({ arm, onChange }) => {
 
   const addLane = (dir: 'in' | 'out') => {
     commitArm(next => {
+      const fullWidthDistance = selected?.distance ?? 0;
+      const taperStart = Math.max(0, fullWidthDistance - 20);
+      if (fullWidthDistance > 0 && !next.profile!.some(point => Math.abs(point.distance - taperStart) < .5)) {
+        next.profile = insertProfilePoint(next, taperStart, totalLength);
+      }
       if (dir === 'in') next.lanesIn.push({ targetsRing: next.lanesIn.at(-1)?.targetsRing ?? '', filletRadius: 40 });
       else next.lanesOut.push({ sourceRing: next.lanesOut.at(-1)?.sourceRing ?? '', filletRadius: 40, dropsRing: false });
       const index = dir === 'in' ? next.lanesIn.length - 1 : next.lanesOut.length - 1;
       for (const point of next.profile!) {
         const lanes = dir === 'in' ? point.lanesIn : point.lanesOut;
-        lanes[index] = { width: selected && point.distance >= selected.distance ? 10 : 0, gap: 0 };
+        lanes[index] = { width: point.distance >= fullWidthDistance ? 10 : 0, gap: 0 };
       }
     });
   };
@@ -130,8 +135,8 @@ export const RoadProfileEditor: React.FC<Props> = ({ arm, onChange }) => {
           <span>{Math.round(totalLength)} ft from roundabout to endpoint</span>
         </div>
         <div>
-          <button data-tooltip="Add an entry lane beginning at the selected change point." onClick={() => addLane('in')}>+ Entry lane</button>
-          <button data-tooltip="Add an exit lane beginning at the selected change point." onClick={() => addLane('out')}>+ Exit lane</button>
+          <button data-tooltip="Add an entry lane at full width here, with an automatic 20-foot taper before this change point." onClick={() => addLane('in')}>+ Entry lane</button>
+          <button data-tooltip="Add an exit lane at full width here, with an automatic 20-foot taper before this change point." onClick={() => addLane('out')}>+ Exit lane</button>
         </div>
       </div>
       <svg

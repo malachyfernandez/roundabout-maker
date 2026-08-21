@@ -109,7 +109,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setFeatureFlag: (key, enabled) => set(state => {
     const featureFlags = { ...state.featureFlags, [key]: enabled };
     localStorage.setItem('roundabout_feature_flags', JSON.stringify(featureFlags));
-    return { featureFlags, activeTool: featureFlags.enhancements ? state.activeTool : 'select', pendingRoadStart: null, pendingBypassSource: null };
+    return {
+      featureFlags,
+      activeTool: featureFlags.enhancements ? state.activeTool : 'select',
+      pendingRoadStart: null,
+      pendingBypassSource: null,
+      draftConfig: null,
+      drag: null
+    };
   }),
   setActiveTool: (activeTool) => set({ activeTool, pendingRoadStart: null, pendingBypassSource: activeTool === 'connect-bypass' ? get().pendingBypassSource : null }),
   setPendingRoadStart: (pendingRoadStart) => set({ pendingRoadStart }),

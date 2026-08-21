@@ -184,7 +184,11 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
         <h3 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           Road: {arm.id}
           <button onClick={() => {
-            handleChange(c => c.arms.splice(i, 1));
+            handleChange(c => {
+              const armId = c.arms[i].id;
+              c.arms.splice(i, 1);
+              c.bypasses = (c.bypasses ?? []).filter(connection => connection.fromArmId !== armId && connection.toArmId !== armId);
+            });
             setSelection(null);
           }} style={{ color: 'red', border: 'none', background: 'none', cursor: 'pointer', fontSize: 18 }}>✕</button>
         </h3>
@@ -192,7 +196,14 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
           <strong style={{fontSize: 16}}>Rename Road ID: </strong>
           <input type="text" value={arm.id} onChange={e => {
             const newId = e.target.value;
-            handleChange(c => c.arms[i].id = newId);
+            handleChange(c => {
+              const oldId = c.arms[i].id;
+              c.arms[i].id = newId;
+              c.bypasses?.forEach(connection => {
+                if (connection.fromArmId === oldId) connection.fromArmId = newId;
+                if (connection.toArmId === oldId) connection.toArmId = newId;
+              });
+            });
             if ((selection?.kind === 'lane' || selection?.kind === 'arm') && selection.armId === arm.id) {
               setSelection({ ...selection, armId: newId });
             }
@@ -250,10 +261,12 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
         <div style={{marginTop: 12, borderTop: '1px solid #ddd', paddingTop: 8}}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <strong>Entry Lanes (In)</strong>
-            <button onClick={() => handleChange(c => {
-              c.arms[i].lanesIn.push({ targetsRing: c.rings[0]?.id || "", filletRadius: 40 });
-              c.arms[i].nodes.forEach(n => n.laneWidthsIn.push(10));
-            })} style={{ fontSize: 10, padding: '2px 4px' }}>+ Add Lane</button>
+            {!profileEnabled && (
+              <button onClick={() => handleChange(c => {
+                c.arms[i].lanesIn.push({ targetsRing: c.rings[0]?.id || "", filletRadius: 40 });
+                c.arms[i].nodes.forEach(n => n.laneWidthsIn.push(10));
+              })} style={{ fontSize: 10, padding: '2px 4px' }}>+ Add Lane</button>
+            )}
           </div>
           {arm.lanesIn.map((lane, li) => {
             const isLaneSelected = selection?.kind === 'lane' && selection.armId === arm.id && selection.dir === 'in' && selection.laneIndex === li;
@@ -267,8 +280,12 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                 borderRadius: 4, position: 'relative'
               }}>
                 <button onClick={() => handleChange(c => {
+                  const armId = c.arms[i].id;
                   c.arms[i].lanesIn.splice(li, 1);
                   c.arms[i].nodes.forEach(n => n.laneWidthsIn.splice(li, 1));
+                  c.arms[i].profile?.forEach(point => point.lanesIn.splice(li, 1));
+                  c.bypasses = (c.bypasses ?? []).filter(connection => connection.fromArmId !== armId || connection.fromLaneIndex !== li);
+                  c.bypasses.forEach(connection => { if (connection.fromArmId === armId && connection.fromLaneIndex > li) connection.fromLaneIndex--; });
                 })} style={{ position: 'absolute', top: 2, right: 2, color: 'red', border: 'none', background: 'none', cursor: 'pointer' }}>✕</button>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 8px', alignItems: 'center', paddingRight: 16 }}>
                   <span>Target:</span>
@@ -309,10 +326,12 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
         <div style={{marginTop: 8, borderTop: '1px solid #ddd', paddingTop: 8}}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <strong>Exit Lanes (Out)</strong>
-            <button onClick={() => handleChange(c => {
-              c.arms[i].lanesOut.push({ sourceRing: c.rings[0]?.id || "", filletRadius: 40, dropsRing: false });
-              c.arms[i].nodes.forEach(n => n.laneWidthsOut.push(10));
-            })} style={{ fontSize: 10, padding: '2px 4px' }}>+ Add Lane</button>
+            {!profileEnabled && (
+              <button onClick={() => handleChange(c => {
+                c.arms[i].lanesOut.push({ sourceRing: c.rings[0]?.id || "", filletRadius: 40, dropsRing: false });
+                c.arms[i].nodes.forEach(n => n.laneWidthsOut.push(10));
+              })} style={{ fontSize: 10, padding: '2px 4px' }}>+ Add Lane</button>
+            )}
           </div>
           {arm.lanesOut.map((lane, li) => {
             const isLaneSelected = selection?.kind === 'lane' && selection.armId === arm.id && selection.dir === 'out' && selection.laneIndex === li;
@@ -325,8 +344,12 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                 borderRadius: 4, position: 'relative'
               }}>
                 <button onClick={() => handleChange(c => {
+                  const armId = c.arms[i].id;
                   c.arms[i].lanesOut.splice(li, 1);
                   c.arms[i].nodes.forEach(n => n.laneWidthsOut.splice(li, 1));
+                  c.arms[i].profile?.forEach(point => point.lanesOut.splice(li, 1));
+                  c.bypasses = (c.bypasses ?? []).filter(connection => connection.toArmId !== armId || connection.toLaneIndex !== li);
+                  c.bypasses.forEach(connection => { if (connection.toArmId === armId && connection.toLaneIndex > li) connection.toLaneIndex--; });
                 })} style={{ position: 'absolute', top: 2, right: 2, color: 'red', border: 'none', background: 'none', cursor: 'pointer' }}>✕</button>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 8px', alignItems: 'center', paddingRight: 16 }}>
                   <span>Source:</span>

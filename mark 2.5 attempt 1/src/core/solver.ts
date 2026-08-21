@@ -69,6 +69,7 @@ function countSegments(routes: RouteSymbolic[]): number {
   return routes.reduce(
     (n, r) => {
       if (r.kind === 'through') return n + 5;
+      if (r.kind === 'profile-lane') return n + 1;
       if (r.kind === 'bypass') return n + 3;
       if (r.kind === 'full-ring') return n + 1;
       return n + 2;
@@ -130,6 +131,21 @@ export function solveGeometry(
 
   for (const route of routes) {
     switch (route.kind) {
+      case 'profile-lane': {
+        const source: SelectionTarget = { kind: 'lane', armId: route.armId, dir: route.dir, laneIndex: route.laneIdx };
+        resolved.push({
+          routeId: route.id,
+          segIndex: 0,
+          kind: route.dir === 'in' ? 'entry-line' : 'exit-line',
+          geom: { kind: 'polyline', points: route.points },
+          color: generateHue(colorIdx++, totalSegs),
+          wStart: route.widths[0] ?? 0,
+          wEnd: route.widths.at(-1) ?? 0,
+          widths: route.widths,
+          source
+        });
+        break;
+      }
       case 'bypass': {
         const entrySource: SelectionTarget = { kind: 'lane', armId: route.entry.armId, dir: 'in', laneIndex: route.entry.laneIdx };
         const exitSource: SelectionTarget = { kind: 'lane', armId: route.exit.armId, dir: 'out', laneIndex: route.exit.laneIdx };

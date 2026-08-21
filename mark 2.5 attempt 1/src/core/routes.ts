@@ -54,6 +54,16 @@ export type FullRingRoute = {
   radius: number;
 };
 
+export type ProfileLaneRoute = {
+  kind: 'profile-lane';
+  id: string;
+  armId: string;
+  laneIdx: number;
+  dir: 'in' | 'out';
+  points: { x: number; y: number }[];
+  widths: number[];
+};
+
 export type BypassRoute = {
   kind: 'bypass';
   id: string;
@@ -64,7 +74,7 @@ export type BypassRoute = {
   exit: { armId: string; laneIdx: number; points: { x: number; y: number }[]; widths: number[] };
 };
 
-export type RouteSymbolic = ThroughRoute | StandaloneEntry | StandaloneExit | FullRingRoute | BypassRoute;
+export type RouteSymbolic = ThroughRoute | StandaloneEntry | StandaloneExit | FullRingRoute | BypassRoute | ProfileLaneRoute;
 
 // Map circulation string to geometric dir (1 = increasing angle, -1 = decreasing)
 export function getCircDir(circ: 'ccw' | 'cw'): 1 | -1 {
@@ -114,6 +124,7 @@ function solveFilletAlongPath(
 }
 
 function indexAtDistance(points: { x: number; y: number }[], target: number) {
+  if (points.length < 2) return 0;
   let distance = 0;
   for (let index = 1; index < points.length; index++) {
     distance += len(sub(points[index], points[index - 1]));
@@ -234,11 +245,11 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     }
   }
 
+  const circulatoryOuterEdge = Math.max(35, ...config.rings.map(ring => ring.radius + ring.width / 2));
   const bypassRoutes: BypassRoute[] = [];
   if (options.bypassEnabled) {
-    const outerRoadEdge = Math.max(35, ...config.rings.map(ring => ring.radius + ring.width / 2));
     for (const bypass of config.bypasses ?? []) {
-      const connectionDistance = outerRoadEdge + bypass.radius + 8;
+      const connectionDistance = circulatoryOuterEdge + bypass.radius + 8;
       const from = lanePaths.get(`${bypass.fromArmId}_in_${bypass.fromLaneIndex}`);
       const to = lanePaths.get(`${bypass.toArmId}_out_${bypass.toLaneIndex}`);
       if (!from || !to || from.points.length < 2 || to.points.length < 2) continue;
@@ -266,6 +277,36 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
   }
   const bypassEntries = new Set((options.bypassEnabled ? config.bypasses ?? [] : []).map(bypass => `${bypass.fromArmId}_${bypass.fromLaneIndex}`));
   const bypassExits = new Set((options.bypassEnabled ? config.bypasses ?? [] : []).map(bypass => `${bypass.toArmId}_${bypass.toLaneIndex}`));
+  const profileLaneRoutes: ProfileLaneRoute[] = [];
+  const profileLaneKeys = new Set<string>();
+  if (options.profileEnabled) {
+    for (const arm of config.arms) {
+      for (const dir of ['in', 'out'] as const) {
+        const laneCount = dir === 'in' ? arm.lanesIn.length : arm.lanesOut.length;
+        for (let laneIdx = 0; laneIdx < laneCount; laneIdx++) {
+          const key = `${arm.id}_${dir}_${laneIdx}`;
+          if ((dir === 'in' ? bypassEntries : bypassExits).has(`${arm.id}_${laneIdx}`)) continue;
+          const path = lanePaths.get(key);
+          if (!path) continue;
+          const ringIndex = indexAtDistance(path.points, circulatoryOuterEdge);
+          if ((path.widths[ringIndex] ?? 0) >= .5) continue;
+          const firstVisible = path.widths.findIndex(width => width > .05);
+          if (firstVisible < 0) continue;
+          const start = Math.max(0, firstVisible - 1);
+          profileLaneKeys.add(key);
+          profileLaneRoutes.push({
+            kind: 'profile-lane',
+            id: `profile_${key}`,
+            armId: arm.id,
+            laneIdx,
+            dir,
+            points: path.points.slice(start),
+            widths: path.widths.slice(start)
+          });
+        }
+      }
+    }
+  }
 
   // 2. Solve fillets for all entry and exit lanes
   type CutPoint = {
@@ -286,7 +327,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
 
   for (const arm of config.arms) {
     for (let i = 0; i < arm.lanesIn.length; i++) {
-      if (bypassEntries.has(`${arm.id}_${i}`)) continue;
+      if (bypassEntries.has(`${arm.id}_${i}`) || profileLaneKeys.has(`${arm.id}_in_${i}`)) continue;
       const lane = arm.lanesIn[i];
       const ring = getRing(lane.targetsRing);
       const path = lanePaths.get(`${arm.id}_in_${i}`)!;
@@ -301,7 +342,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     }
 
     for (let i = 0; i < arm.lanesOut.length; i++) {
-      if (bypassExits.has(`${arm.id}_${i}`)) continue;
+      if (bypassExits.has(`${arm.id}_${i}`) || profileLaneKeys.has(`${arm.id}_out_${i}`)) continue;
       const lane = arm.lanesOut[i];
       const ring = getRing(lane.sourceRing);
       const path = lanePaths.get(`${arm.id}_out_${i}`)!;
@@ -317,7 +358,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
   }
 
   // 3. Compile routes per ring using dropsRing logic
-  const routes: RouteSymbolic[] = [...bypassRoutes];
+  const routes: RouteSymbolic[] = [...bypassRoutes, ...profileLaneRoutes];
 
   for (const [ringId, cuts] of ringCuts.entries()) {
     const entries = cuts.filter((c) => c.type === 'entry');
