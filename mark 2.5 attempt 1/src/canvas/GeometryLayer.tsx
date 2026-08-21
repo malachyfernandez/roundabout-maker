@@ -2,7 +2,8 @@ import React from 'react';
 import { type Vec2, add, sub, scale, norm, perpLeft } from '../math/vector';
 import { type ResolvedSegment } from '../core/solver';
 import { type Polyline, type Arc, type Line, arcPoint, linePoint, arcTangent } from '../geometry/primitives';
-import { useEditorStore } from '../editor/editorStore';
+import { isFeatureEnabled, useEditorStore } from '../editor/editorStore';
+import { isRightTurnPair } from '../core/bypass';
 
 function generateVariableWidthPath(seg: ResolvedSegment): string {
   const pts: { p: Vec2, normal: Vec2 }[] = [];
@@ -51,7 +52,7 @@ function generateVariableWidthPath(seg: ResolvedSegment): string {
   
   for (let i = 0; i < pts.length; i++) {
     const t = i / (pts.length - 1);
-    const w = seg.wStart + (seg.wEnd - seg.wStart) * t;
+    const w = seg.widths?.[i] ?? (seg.wStart + (seg.wEnd - seg.wStart) * t);
     const { p, normal } = pts[i];
     leftOffset.push(add(p, scale(normal, w / 2)));
     rightOffset.push(sub(p, scale(normal, w / 2)));
@@ -82,6 +83,10 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
   const selection = useEditorStore(state => state.selection);
   const hovered = useEditorStore(state => state.hovered);
   const viewMode = useEditorStore(state => state.viewMode);
+  const activeTool = useEditorStore(state => state.activeTool);
+  const pendingBypassSource = useEditorStore(state => state.pendingBypassSource);
+  const featureFlags = useEditorStore(state => state.featureFlags);
+  const enhancedMarkings = isFeatureEnabled(featureFlags, 'renderedMarkings');
 
   const matches = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -120,20 +125,36 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
     }
     
     let isSelected = false;
+    let isRoadSelected = false;
     let isHovered = false;
     
     if (seg.source.kind === 'lane') {
-      isSelected = selection?.kind === 'lane' && selection.armId === seg.source.armId;
-      isHovered = hovered?.kind === 'lane' && hovered.armId === seg.source.armId;
+      isSelected = selection?.kind === 'lane'
+        && selection.armId === seg.source.armId
+        && selection.dir === seg.source.dir
+        && selection.laneIndex === seg.source.laneIndex;
+      isRoadSelected = (selection?.kind === 'lane' || selection?.kind === 'arm') && selection.armId === seg.source.armId;
+      isHovered = hovered?.kind === 'lane'
+        && hovered.armId === seg.source.armId
+        && hovered.dir === seg.source.dir
+        && hovered.laneIndex === seg.source.laneIndex;
     } else if (seg.source.kind === 'ring') {
       isSelected = selection?.kind === 'ring' && selection.ringId === seg.source.ringId;
       isHovered = hovered?.kind === 'ring' && hovered.ringId === seg.source.ringId;
     }
 
     const isRendered = viewMode === 'rendered';
+    const laneSource = seg.source.kind === 'lane' ? seg.source : null;
+    const isBypassCandidate = activeTool === 'connect-bypass'
+      && pendingBypassSource
+      && laneSource?.dir === 'out'
+      && isRightTurnPair(
+        config.arms.find(arm => arm.id === pendingBypassSource.armId),
+        config.arms.find(arm => arm.id === laneSource.armId)
+      );
     let fillColor = seg.color;
-    let strokeHighlight = isSelected ? '#ffeb3b' : isHovered ? '#ffffff' : undefined;
-    let opacity = 0.8;
+    let strokeHighlight = isBypassCandidate ? '#22c55e' : isSelected ? '#facc15' : isRoadSelected ? '#60a5fa' : isHovered ? '#ffffff' : undefined;
+    let opacity = isBypassCandidate || isSelected ? 1 : isRoadSelected ? 0.9 : 0.8;
 
     if (isRendered) {
       fillColor = '#555';
@@ -141,6 +162,13 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
       strokeHighlight = undefined;
       // In rendered mode, we can show selection as a subtle overlay
     }
+    const sourceTooltip = isBypassCandidate
+      ? `Connect the right-turn bypass to exit lane ${seg.source.kind === 'lane' ? seg.source.laneIndex + 1 : ''}.`
+      : seg.source.kind === 'lane'
+      ? `Select ${seg.source.dir === 'in' ? 'entry' : 'exit'} lane ${seg.source.laneIndex + 1}.`
+      : seg.source.kind === 'ring'
+        ? `Select ring ${seg.source.ringId}.`
+        : 'Select this geometry.';
     
     return (
       <g key={`${seg.routeId}-${seg.segIndex}`}>
@@ -148,9 +176,10 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
           d={d}
           fill={fillColor}
           stroke={strokeHighlight || "none"}
-          strokeWidth={strokeHighlight ? 4 * zoom : 0}
+          strokeWidth={strokeHighlight ? (isSelected || isBypassCandidate ? 4 : 2) * zoom : 0}
           opacity={opacity}
           data-target={JSON.stringify(seg.source)}
+          data-tooltip={sourceTooltip}
         />
         <path
           d={d}
@@ -159,8 +188,9 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
           strokeWidth={12 * zoom}
           pointerEvents="stroke"
           data-target={JSON.stringify(seg.source)}
+          data-tooltip={sourceTooltip}
         />
-        {isRendered && (
+        {isRendered && !enhancedMarkings && (
           <path
             d={dCenter}
             fill="none"
@@ -192,7 +222,7 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
         )}
         
         {/* Yield Triangle Marking */}
-        {isRendered && seg.kind === 'entry-fillet' && (
+        {isRendered && !enhancedMarkings && seg.kind === 'entry-fillet' && (
           <g>
             {(() => {
               const arc = seg.geom as Arc;

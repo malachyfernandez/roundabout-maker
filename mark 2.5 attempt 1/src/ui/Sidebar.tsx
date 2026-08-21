@@ -1,6 +1,8 @@
 import React from 'react';
 import { type RoundaboutConfig } from '../config/types';
-import { useEditorStore } from '../editor/editorStore';
+import { isFeatureEnabled, useEditorStore } from '../editor/editorStore';
+import { RoadProfileEditor } from './RoadProfileEditor';
+import { MARKING_RULES } from '../rendering/markings';
 
 type Props = {
   config: RoundaboutConfig;
@@ -12,6 +14,14 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
   const selection = useEditorStore(state => state.selection);
   const setSelection = useEditorStore(state => state.setSelection);
   const resetToDefault = useEditorStore(state => state.resetToDefault);
+  const setActiveTool = useEditorStore(state => state.setActiveTool);
+  const setPendingBypassSource = useEditorStore(state => state.setPendingBypassSource);
+  const viewMode = useEditorStore(state => state.viewMode);
+  const featureFlags = useEditorStore(state => state.featureFlags);
+  const profileEnabled = isFeatureEnabled(featureFlags, 'roadProfiles');
+  const creationToolsEnabled = isFeatureEnabled(featureFlags, 'creationTools');
+  const bypassEnabled = isFeatureEnabled(featureFlags, 'bypassLanes');
+  const renderedMarkingsEnabled = isFeatureEnabled(featureFlags, 'renderedMarkings');
 
   const handleChange = (updater: (draft: RoundaboutConfig) => void) => {
     const nextConfig = JSON.parse(JSON.stringify(config));
@@ -81,14 +91,25 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
         </select>
       </label>
       
-      <div style={{ marginTop: 24 }}>
-        <button onClick={handleAddRing}>+ Add Ring</button>
-        <button style={{ marginLeft: 8 }} onClick={handleAddArm}>+ Add Road</button>
-      </div>
+      {!creationToolsEnabled && (
+        <div style={{ marginTop: 24 }}>
+          <button data-tooltip="Add another circulatory ring." onClick={handleAddRing}>+ Add Ring</button>
+          <button data-tooltip="Add another approach road." style={{ marginLeft: 8 }} onClick={handleAddArm}>+ Add Road</button>
+        </div>
+      )}
       
       <p style={{ marginTop: 24, color: '#666', fontStyle: 'italic' }}>
         Click on the island, rings, or lanes in the viewport to edit their specific properties.
       </p>
+      {viewMode === 'rendered' && renderedMarkingsEnabled && (
+        <details open style={{ marginTop: 18, padding: 10, background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 8 }}>
+          <summary data-tooltip="Show the plain-language rules that generate the visible pavement markings." style={{ cursor: 'pointer', fontWeight: 700 }}>Rendered marking rules</summary>
+          <p style={{ margin: '7px 0', color: '#64748b', fontSize: 11 }}>MUTCD-inspired schematic rules. Jurisdiction-specific engineering review is still required for construction use.</p>
+          <ol style={{ margin: 0, paddingLeft: 18, color: '#334155', fontSize: 11, lineHeight: 1.4 }}>
+            {MARKING_RULES.map(rule => <li key={rule} style={{ marginBottom: 4 }}>{rule}</li>)}
+          </ol>
+        </details>
+      )}
     </div>
   );
 
@@ -177,9 +198,22 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
             }
           }} style={{marginLeft: 4, width: 150}} />
         </div>
+
+        {selection?.kind === 'lane' && (
+          <div style={{ marginBottom: 10, padding: '7px 9px', color: '#1e3a8a', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 6, fontSize: 12 }}>
+            Editing {selection.dir === 'in' ? 'entry' : 'exit'} lane {selection.laneIndex + 1}; the complete road remains highlighted in blue.
+          </div>
+        )}
+
+        {profileEnabled && (
+          <RoadProfileEditor
+            arm={arm}
+            onChange={updated => handleChange(c => { c.arms[i] = updated; })}
+          />
+        )}
         
         {/* Nodes Editor (Vertical) */}
-        <div style={{marginTop: 12, borderTop: '1px solid #ddd', paddingTop: 8}}>
+        <div style={{marginTop: 12, borderTop: '1px solid #ddd', paddingTop: 8, display: profileEnabled ? 'none' : 'block'}}>
           <strong>Road shape</strong>
           <p style={{ margin: '4px 0 10px', color: '#64748b', fontSize: 12 }}>
             Drag the blue points and tangent nubs. Click or drag the blue centerline to add a point.
@@ -223,6 +257,7 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
           </div>
           {arm.lanesIn.map((lane, li) => {
             const isLaneSelected = selection?.kind === 'lane' && selection.armId === arm.id && selection.dir === 'in' && selection.laneIndex === li;
+            const bypass = config.bypasses?.find(connection => connection.fromArmId === arm.id && connection.fromLaneIndex === li);
             return (
               <div key={li} style={{
                 marginBottom: 8, padding: 8, 
@@ -243,6 +278,28 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                   <span>Fillet R:</span>
                   <input type="number" value={lane.filletRadius} onChange={e => handleChange(c => c.arms[i].lanesIn[li].filletRadius = Number(e.target.value))} />
                 </div>
+                {bypassEnabled && (
+                  <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px solid #dbe3ee' }}>
+                    {bypass ? (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, color: '#166534', fontSize: 11 }}>
+                        <span>Right turn → {bypass.toArmId}, exit {bypass.toLaneIndex + 1}</span>
+                        <button
+                          data-tooltip="Remove this direct right-turn connection and reconnect both lanes to their rings."
+                          onClick={() => handleChange(c => { c.bypasses = (c.bypasses ?? []).filter(connection => connection.id !== bypass.id); })}
+                        >Remove</button>
+                      </div>
+                    ) : (
+                      <button
+                        data-tooltip="Start a right-turn bypass from this entry lane, then click a highlighted exit lane on another road."
+                        onClick={() => {
+                          setSelection({ kind: 'lane', armId: arm.id, dir: 'in', laneIndex: li });
+                          setPendingBypassSource({ armId: arm.id, laneIndex: li });
+                          setActiveTool('connect-bypass');
+                        }}
+                      >Connect right-turn bypass…</button>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

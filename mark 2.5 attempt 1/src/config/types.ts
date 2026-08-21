@@ -31,9 +31,32 @@ export type ArmNode = {
   laneWidthsOut: number[];
 };
 
+export type ProfileLane = {
+  width: number;
+  gap: number;
+};
+
+export type RoadProfilePoint = {
+  id: string;
+  distance: number;
+  medianWidth: number;
+  lanesIn: ProfileLane[];
+  lanesOut: ProfileLane[];
+};
+
+export type RightTurnBypass = {
+  id: string;
+  fromArmId: string;
+  fromLaneIndex: number;
+  toArmId: string;
+  toLaneIndex: number;
+  radius: number;
+};
+
 export type ArmConfig = {
   id: string;
   nodes: ArmNode[];
+  profile?: RoadProfilePoint[];
   // Topology remains global to the arm
   lanesIn: { targetsRing: string; filletRadius?: number }[];
   lanesOut: { sourceRing: string; filletRadius?: number; dropsRing: boolean }[];
@@ -43,6 +66,7 @@ export type RoundaboutConfig = {
   island: { center: Vec2; radius: number };
   rings: RingConfig[];
   arms: ArmConfig[];
+  bypasses?: RightTurnBypass[];
   circulation: "ccw" | "cw";
 };
 

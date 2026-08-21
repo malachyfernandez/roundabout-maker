@@ -3,12 +3,14 @@ import { solveFillet, type FilletSolution } from '../geometry/fillet';
 import { type Line, normalizeAngle } from '../geometry/primitives';
 import { sub, normalize, dot, len } from '../math/vector';
 import { offsetSpline } from '../math/spline';
+import { laneOffsetAt, sampleProfile } from './profile';
 
 export type EntryLeg = {
   armId: string;
   laneIdx: number;
   line: Line;
   points: {x:number, y:number}[];
+  widths: number[];
   fillet: FilletSolution;
 };
 
@@ -17,6 +19,7 @@ export type ExitLeg = {
   laneIdx: number;
   line: Line;
   points: {x:number, y:number}[];
+  widths: number[];
   fillet: FilletSolution;
 };
 
@@ -51,7 +54,17 @@ export type FullRingRoute = {
   radius: number;
 };
 
-export type RouteSymbolic = ThroughRoute | StandaloneEntry | StandaloneExit | FullRingRoute;
+export type BypassRoute = {
+  kind: 'bypass';
+  id: string;
+  bypassId: string;
+  radius: number;
+  entry: { armId: string; laneIdx: number; points: { x: number; y: number }[]; widths: number[] };
+  curve: { points: { x: number; y: number }[]; widths: number[] };
+  exit: { armId: string; laneIdx: number; points: { x: number; y: number }[]; widths: number[] };
+};
+
+export type RouteSymbolic = ThroughRoute | StandaloneEntry | StandaloneExit | FullRingRoute | BypassRoute;
 
 // Map circulation string to geometric dir (1 = increasing angle, -1 = decreasing)
 export function getCircDir(circ: 'ccw' | 'cw'): 1 | -1 {
@@ -100,12 +113,37 @@ function solveFilletAlongPath(
   return best ? { line: best.line, fillet: best.fillet } : null;
 }
 
-export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
+function indexAtDistance(points: { x: number; y: number }[], target: number) {
+  let distance = 0;
+  for (let index = 1; index < points.length; index++) {
+    distance += len(sub(points[index], points[index - 1]));
+    if (distance >= target) return index;
+  }
+  return Math.max(0, points.length - 2);
+}
+
+function sampleBypassCurve(p0: { x: number; y: number }, c1: { x: number; y: number }, c2: { x: number; y: number }, p1: { x: number; y: number }, count = 36) {
+  return Array.from({ length: count + 1 }, (_, index) => {
+    const t = index / count;
+    const mt = 1 - t;
+    return {
+      x: p0.x * mt * mt * mt + c1.x * 3 * mt * mt * t + c2.x * 3 * mt * t * t + p1.x * t * t * t,
+      y: p0.y * mt * mt * mt + c1.y * 3 * mt * mt * t + c2.y * 3 * mt * t * t + p1.y * t * t * t
+    };
+  });
+}
+
+export type CompileOptions = {
+  profileEnabled?: boolean;
+  bypassEnabled?: boolean;
+};
+
+export function compileRoutes(config: RoundaboutConfig, options: CompileOptions = {}): RouteSymbolic[] {
   const circDir = getCircDir(config.circulation);
   const isRHD = config.circulation === 'ccw';
 
   // 1. Precompute lane centerlines for all arms
-  const lanePaths = new Map<string, { points: {x:number, y:number}[], line: Line }>();
+  const lanePaths = new Map<string, { points: {x:number, y:number}[], widths: number[], line: Line }>();
 
   for (const arm of config.arms) {
     if (arm.nodes.length < 2) continue;
@@ -116,6 +154,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
       alpha: 0.5, // Centripetal
       tension: 0.0
     };
+    const profileSample = options.profileEnabled ? sampleProfile(arm, baseSpline, 90) : null;
 
     // Helper to calculate cumulative widths at each node for offsetting
     const getOffsets = (getLaneWidths: (n: any) => number[], getMedian: (n: any) => number, laneIdx: number, isRHD: boolean, isEntry: boolean) => {
@@ -149,8 +188,13 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
     };
 
     for (let i = 0; i < arm.lanesIn.length; i++) {
-      const offsets = getOffsets(n => n.laneWidthsIn || [], n => n.medianWidth, i, isRHD, true);
+      const offsets = profileSample
+        ? profileSample.sections.map(section => laneOffsetAt(section, i, true, isRHD))
+        : getOffsets(n => n.laneWidthsIn || [], n => n.medianWidth, i, isRHD, true);
       const lanePoints = offsetSpline(baseSpline, offsets, 90); // returns array of Vec2
+      const widths = profileSample
+        ? profileSample.sections.map(section => section.lanesIn[i]?.width ?? 0)
+        : lanePoints.map(() => arm.nodes[0].laneWidthsIn[i] || 10);
       
       // Lane points go from center to out. The entry vector goes from out to center.
       // So tangent at [0] goes from center to out. We negate it for uIn.
@@ -163,13 +207,19 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
 
       lanePaths.set(`${arm.id}_in_${i}`, {
         points: lanePoints,
+        widths,
         line: { kind: 'line', p: pFar, u: uIn, t0: 0, t1: 1000 }
       });
     }
 
     for (let i = 0; i < arm.lanesOut.length; i++) {
-      const offsets = getOffsets(n => n.laneWidthsOut || [], n => n.medianWidth, i, isRHD, false);
+      const offsets = profileSample
+        ? profileSample.sections.map(section => laneOffsetAt(section, i, false, isRHD))
+        : getOffsets(n => n.laneWidthsOut || [], n => n.medianWidth, i, isRHD, false);
       const lanePoints = offsetSpline(baseSpline, offsets, 90);
+      const widths = profileSample
+        ? profileSample.sections.map(section => section.lanesOut[i]?.width ?? 0)
+        : lanePoints.map(() => arm.nodes[0].laneWidthsOut[i] || 10);
       
       // Exit vector goes from center to out.
       const pNear = lanePoints[0];
@@ -178,10 +228,44 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
 
       lanePaths.set(`${arm.id}_out_${i}`, {
         points: lanePoints,
+        widths,
         line: { kind: 'line', p: pNear, u: uOut, t0: 0, t1: 1000 }
       });
     }
   }
+
+  const bypassRoutes: BypassRoute[] = [];
+  if (options.bypassEnabled) {
+    const outerRoadEdge = Math.max(35, ...config.rings.map(ring => ring.radius + ring.width / 2));
+    for (const bypass of config.bypasses ?? []) {
+      const connectionDistance = outerRoadEdge + bypass.radius + 8;
+      const from = lanePaths.get(`${bypass.fromArmId}_in_${bypass.fromLaneIndex}`);
+      const to = lanePaths.get(`${bypass.toArmId}_out_${bypass.toLaneIndex}`);
+      if (!from || !to || from.points.length < 2 || to.points.length < 2) continue;
+      const fromIndex = indexAtDistance(from.points, connectionDistance);
+      const toIndex = indexAtDistance(to.points, connectionDistance);
+      const p0 = from.points[fromIndex];
+      const p1 = to.points[toIndex];
+      const incoming = normalize(sub(from.points[Math.max(0, fromIndex - 1)], from.points[Math.min(from.points.length - 1, fromIndex + 1)]));
+      const outgoing = normalize(sub(to.points[Math.min(to.points.length - 1, toIndex + 1)], to.points[Math.max(0, toIndex - 1)]));
+      const c1 = { x: p0.x + incoming.x * bypass.radius, y: p0.y + incoming.y * bypass.radius };
+      const c2 = { x: p1.x - outgoing.x * bypass.radius, y: p1.y - outgoing.y * bypass.radius };
+      const curvePoints = sampleBypassCurve(p0, c1, c2, p1);
+      const fromWidth = from.widths[fromIndex] ?? 10;
+      const toWidth = to.widths[toIndex] ?? 10;
+      bypassRoutes.push({
+        kind: 'bypass',
+        id: `bypass_${bypass.id}`,
+        bypassId: bypass.id,
+        radius: bypass.radius,
+        entry: { armId: bypass.fromArmId, laneIdx: bypass.fromLaneIndex, points: from.points.slice(fromIndex), widths: from.widths.slice(fromIndex) },
+        curve: { points: curvePoints, widths: curvePoints.map((_point, index) => fromWidth + (toWidth - fromWidth) * index / (curvePoints.length - 1)) },
+        exit: { armId: bypass.toArmId, laneIdx: bypass.toLaneIndex, points: to.points.slice(toIndex), widths: to.widths.slice(toIndex) }
+      });
+    }
+  }
+  const bypassEntries = new Set((options.bypassEnabled ? config.bypasses ?? [] : []).map(bypass => `${bypass.fromArmId}_${bypass.fromLaneIndex}`));
+  const bypassExits = new Set((options.bypassEnabled ? config.bypasses ?? [] : []).map(bypass => `${bypass.toArmId}_${bypass.toLaneIndex}`));
 
   // 2. Solve fillets for all entry and exit lanes
   type CutPoint = {
@@ -202,6 +286,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
 
   for (const arm of config.arms) {
     for (let i = 0; i < arm.lanesIn.length; i++) {
+      if (bypassEntries.has(`${arm.id}_${i}`)) continue;
       const lane = arm.lanesIn[i];
       const ring = getRing(lane.targetsRing);
       const path = lanePaths.get(`${arm.id}_in_${i}`)!;
@@ -216,6 +301,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
     }
 
     for (let i = 0; i < arm.lanesOut.length; i++) {
+      if (bypassExits.has(`${arm.id}_${i}`)) continue;
       const lane = arm.lanesOut[i];
       const ring = getRing(lane.sourceRing);
       const path = lanePaths.get(`${arm.id}_out_${i}`)!;
@@ -231,7 +317,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
   }
 
   // 3. Compile routes per ring using dropsRing logic
-  const routes: RouteSymbolic[] = [];
+  const routes: RouteSymbolic[] = [...bypassRoutes];
 
   for (const [ringId, cuts] of ringCuts.entries()) {
     const entries = cuts.filter((c) => c.type === 'entry');
@@ -255,7 +341,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
           kind: 'standalone-entry',
           id: `entry_${entry.armId}-${entry.laneIdx}_${ringId}`,
           ringId,
-          entry: { armId: entry.armId, laneIdx: entry.laneIdx, line: entry.line, fillet: entry.fillet, points: lanePaths.get(`${entry.armId}_in_${entry.laneIdx}`)!.points },
+          entry: { armId: entry.armId, laneIdx: entry.laneIdx, line: entry.line, fillet: entry.fillet, points: lanePaths.get(`${entry.armId}_in_${entry.laneIdx}`)!.points, widths: lanePaths.get(`${entry.armId}_in_${entry.laneIdx}`)!.widths },
         });
       }
       for (const exit of exits) {
@@ -263,7 +349,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
           kind: 'standalone-exit',
           id: `exit_${exit.armId}-${exit.laneIdx}_${ringId}`,
           ringId,
-          exit: { armId: exit.armId, laneIdx: exit.laneIdx, line: exit.line, fillet: exit.fillet, points: lanePaths.get(`${exit.armId}_out_${exit.laneIdx}`)!.points },
+          exit: { armId: exit.armId, laneIdx: exit.laneIdx, line: exit.line, fillet: exit.fillet, points: lanePaths.get(`${exit.armId}_out_${exit.laneIdx}`)!.points, widths: lanePaths.get(`${exit.armId}_out_${exit.laneIdx}`)!.widths },
         });
       }
       continue;
@@ -299,7 +385,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
             kind: 'standalone-entry',
             id: `entry_${cut.armId}-${cut.laneIdx}_${ringId}`,
             ringId,
-            entry: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_in_${cut.laneIdx}`)!.points },
+            entry: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_in_${cut.laneIdx}`)!.points, widths: lanePaths.get(`${cut.armId}_in_${cut.laneIdx}`)!.widths },
           });
         }
       } else if (cut.type === 'exit') {
@@ -309,9 +395,9 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
               kind: 'through',
               id: `route_${currentThroughEntry.armId}-${currentThroughEntry.laneIdx}_to_${cut.armId}-${cut.laneIdx}`,
               ringId,
-              entry: { armId: currentThroughEntry.armId, laneIdx: currentThroughEntry.laneIdx, line: currentThroughEntry.line, fillet: currentThroughEntry.fillet, points: lanePaths.get(`${currentThroughEntry.armId}_in_${currentThroughEntry.laneIdx}`)!.points },
+              entry: { armId: currentThroughEntry.armId, laneIdx: currentThroughEntry.laneIdx, line: currentThroughEntry.line, fillet: currentThroughEntry.fillet, points: lanePaths.get(`${currentThroughEntry.armId}_in_${currentThroughEntry.laneIdx}`)!.points, widths: lanePaths.get(`${currentThroughEntry.armId}_in_${currentThroughEntry.laneIdx}`)!.widths },
               ringSpan: { a0: currentThroughEntry.angle, a1: cut.angle, dir: circDir },
-              exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points },
+              exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points, widths: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.widths },
             });
             currentThroughEntry = null;
           } else {
@@ -319,7 +405,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
               kind: 'standalone-exit',
               id: `exit_${cut.armId}-${cut.laneIdx}_${ringId}`,
               ringId,
-              exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points },
+              exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points, widths: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.widths },
             });
           }
         } else {
@@ -327,7 +413,7 @@ export function compileRoutes(config: RoundaboutConfig): RouteSymbolic[] {
             kind: 'standalone-exit',
             id: `exit_${cut.armId}-${cut.laneIdx}_${ringId}`,
             ringId,
-            exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points },
+            exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points, widths: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.widths },
           });
         }
       }

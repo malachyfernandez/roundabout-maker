@@ -32,6 +32,7 @@ export const TangentHandle: React.FC<Props> = ({ anchor, offset, zoom, onDrag })
         fill="#dbeafe"
         stroke="#2563eb"
         cursor="crosshair"
+        tooltip="Drag to change the road's curve angle and tension at this point."
         onDrag={onDrag}
       />
     </g>

@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { type Vec2, sub } from '../math/vector';
+import { type Vec2, len, sub } from '../math/vector';
 import { screenToWorld } from '../viewport/transform';
 import { useEditorStore } from '../editor/editorStore';
 import { type RoundaboutConfig } from '../config/types';
@@ -12,17 +12,21 @@ type Props = {
   radius?: number;
   fill?: string;
   stroke?: string;
+  tooltip?: string;
   onDrag: (deltaWorld: Vec2, originalConfig: RoundaboutConfig) => RoundaboutConfig;
+  onClick?: (originalConfig: RoundaboutConfig) => RoundaboutConfig;
 };
 
-export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 6, fill = '#fff', stroke = '#000', onDrag }) => {
+export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 6, fill = '#fff', stroke = '#000', tooltip, onDrag, onClick }) => {
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const commitDraft = useEditorStore(state => state.commitDraft);
   const committedConfig = useEditorStore(state => state.committedConfig);
+  const setCommittedConfig = useEditorStore(state => state.setCommittedConfig);
   const setDrag = useEditorStore(state => state.setDrag);
 
   const startPt = useRef<Vec2 | null>(null);
   const startConfig = useRef<RoundaboutConfig | null>(null);
+  const moved = useRef(false);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation(); // prevent Viewport from capturing
@@ -33,6 +37,7 @@ export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 
 
     startPt.current = screenToWorld(e, svgEl);
     startConfig.current = JSON.parse(JSON.stringify(committedConfig));
+    moved.current = false;
     setDrag({ active: true, type: 'handle' });
   };
 
@@ -44,18 +49,33 @@ export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 
 
     const currentPt = screenToWorld(e, svgEl);
     const delta = sub(currentPt, startPt.current);
+    if (len(delta) > 2 * zoom) moved.current = true;
     
     const newConfig = onDrag(delta, startConfig.current);
     setDraftConfig(newConfig);
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (startPt.current) {
-      commitDraft();
+    if (startPt.current && startConfig.current) {
+      if (!moved.current && onClick) {
+        setDraftConfig(null);
+        setCommittedConfig(onClick(startConfig.current));
+        setDrag(null);
+      } else {
+        commitDraft();
+      }
       startPt.current = null;
       startConfig.current = null;
-      e.currentTarget.releasePointerCapture(e.pointerId);
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
     }
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent) => {
+    setDraftConfig(null);
+    setDrag(null);
+    startPt.current = null;
+    startConfig.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   };
 
   const r = radius * zoom;
@@ -71,8 +91,9 @@ export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
       data-handle="true"
+      data-tooltip={tooltip}
     />
   );
 };

@@ -101,6 +101,7 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected }) => {
         cursor={selected ? 'copy' : 'pointer'}
         data-target={selected ? undefined : JSON.stringify({ kind: 'arm', armId: arm.id })}
         data-handle={selected ? 'true' : undefined}
+        data-tooltip={selected ? 'Click to add a road point, or drag immediately to place it.' : `Select road ${arm.id}.`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}

@@ -1,11 +1,39 @@
 import { create } from 'zustand';
 import { type RoundaboutConfig, type SelectionTarget } from '../config/types';
+import { type Vec2 } from '../math/vector';
 import { DEFAULT_CONFIG } from '../core/config';
 
 type DragState = {
   active: boolean;
   type: string;
 };
+
+export type FeatureFlags = {
+  enhancements: boolean;
+  tooltips: boolean;
+  creationTools: boolean;
+  gizmos: boolean;
+  roadProfiles: boolean;
+  bypassLanes: boolean;
+  renderedMarkings: boolean;
+};
+
+export type FeatureKey = Exclude<keyof FeatureFlags, 'enhancements'>;
+export type ActiveTool = 'select' | 'add-road' | 'add-ring' | 'connect-bypass';
+
+export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
+  enhancements: true,
+  tooltips: true,
+  creationTools: true,
+  gizmos: true,
+  roadProfiles: true,
+  bypassLanes: true,
+  renderedMarkings: true
+};
+
+export function isFeatureEnabled(flags: FeatureFlags, key: FeatureKey) {
+  return flags.enhancements && flags[key];
+}
 
 interface EditorState {
   committedConfig: RoundaboutConfig;
@@ -14,6 +42,10 @@ interface EditorState {
   hovered: SelectionTarget | null;
   drag: DragState | null;
   viewMode: 'preview' | 'rendered';
+  featureFlags: FeatureFlags;
+  activeTool: ActiveTool;
+  pendingRoadStart: Vec2 | null;
+  pendingBypassSource: { armId: string; laneIndex: number } | null;
 
   setCommittedConfig: (config: RoundaboutConfig) => void;
   setDraftConfig: (config: RoundaboutConfig | null) => void;
@@ -21,9 +53,21 @@ interface EditorState {
   setHovered: (sel: SelectionTarget | null) => void;
   setDrag: (drag: DragState | null) => void;
   setViewMode: (mode: 'preview' | 'rendered') => void;
+  setFeatureFlag: (key: keyof FeatureFlags, enabled: boolean) => void;
+  setActiveTool: (tool: ActiveTool) => void;
+  setPendingRoadStart: (point: Vec2 | null) => void;
+  setPendingBypassSource: (source: { armId: string; laneIndex: number } | null) => void;
   commitDraft: () => void;
   resetToDefault: () => void;
 }
+
+const getStoredFeatureFlags = (): FeatureFlags => {
+  try {
+    const saved = localStorage.getItem('roundabout_feature_flags');
+    if (saved) return { ...DEFAULT_FEATURE_FLAGS, ...JSON.parse(saved) };
+  } catch {}
+  return DEFAULT_FEATURE_FLAGS;
+};
 
 const getStoredConfig = () => {
   try {
@@ -47,6 +91,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   hovered: null,
   drag: null,
   viewMode: 'preview',
+  featureFlags: getStoredFeatureFlags(),
+  activeTool: 'select',
+  pendingRoadStart: null,
+  pendingBypassSource: null,
 
   setCommittedConfig: (config) => {
     localStorage.setItem('roundabout_config', JSON.stringify(config));
@@ -58,6 +106,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setHovered: (sel) => set({ hovered: sel }),
   setDrag: (drag) => set({ drag }),
   setViewMode: (mode) => set({ viewMode: mode }),
+  setFeatureFlag: (key, enabled) => set(state => {
+    const featureFlags = { ...state.featureFlags, [key]: enabled };
+    localStorage.setItem('roundabout_feature_flags', JSON.stringify(featureFlags));
+    return { featureFlags, activeTool: featureFlags.enhancements ? state.activeTool : 'select', pendingRoadStart: null, pendingBypassSource: null };
+  }),
+  setActiveTool: (activeTool) => set({ activeTool, pendingRoadStart: null, pendingBypassSource: activeTool === 'connect-bypass' ? get().pendingBypassSource : null }),
+  setPendingRoadStart: (pendingRoadStart) => set({ pendingRoadStart }),
+  setPendingBypassSource: (pendingBypassSource) => set({ pendingBypassSource }),
   
   commitDraft: () => {
     const { draftConfig } = get();
@@ -73,7 +129,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     for (const key of ['roundabout_bg', 'roundabout_bgOp', 'roundabout_bgSize', 'roundabout_pan', 'roundabout_zoom']) {
       localStorage.removeItem(key);
     }
-    set({ committedConfig: config, draftConfig: null, selection: null, hovered: null, drag: null, viewMode: 'preview' });
+    set({ committedConfig: config, draftConfig: null, selection: null, hovered: null, drag: null, viewMode: 'preview', activeTool: 'select', pendingRoadStart: null, pendingBypassSource: null });
     window.dispatchEvent(new Event('roundabout-reset'));
   }
 }));

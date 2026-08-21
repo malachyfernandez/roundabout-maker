@@ -1,5 +1,5 @@
 import { type ArmNode, type RoundaboutConfig } from '../config/types';
-import { type Vec2, add, len, lerp, norm, scale, sub } from '../math/vector';
+import { type Vec2, add, dot, len, lerp, norm, scale, sub } from '../math/vector';
 import { getBezierSegment } from '../math/spline';
 
 export function dragIslandCenter(delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
@@ -10,6 +10,75 @@ export function dragIslandCenter(delta: Vec2, original: RoundaboutConfig): Round
     x: Math.round(cx + delta.x),
     y: Math.round(cy + delta.y)
   };
+  return next;
+}
+
+export function dragIslandRadius(direction: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  next.island.radius = Math.max(5, Math.round((original.island.radius + dot(delta, direction)) * 10) / 10);
+  return next;
+}
+
+export function dragRingCenter(ringId: string, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const ring = next.rings.find(candidate => candidate.id === ringId);
+  const source = original.rings.find(candidate => candidate.id === ringId);
+  if (ring && source) ring.center = { x: Math.round(source.center.x + delta.x), y: Math.round(source.center.y + delta.y) };
+  return next;
+}
+
+export function dragRingRadius(ringId: string, direction: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const ring = next.rings.find(candidate => candidate.id === ringId);
+  const source = original.rings.find(candidate => candidate.id === ringId);
+  if (ring && source) ring.radius = Math.max(5, Math.round((source.radius + dot(delta, direction)) * 10) / 10);
+  return next;
+}
+
+export function dragRingWidth(ringId: string, direction: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const ring = next.rings.find(candidate => candidate.id === ringId);
+  const source = original.rings.find(candidate => candidate.id === ringId);
+  if (ring && source) ring.width = Math.max(2, Math.round((source.width + dot(delta, direction) * 2) * 10) / 10);
+  return next;
+}
+
+export function dragLaneFilletRadius(armId: string, dir: 'in' | 'out', laneIndex: number, direction: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const arm = next.arms.find(candidate => candidate.id === armId);
+  const source = original.arms.find(candidate => candidate.id === armId);
+  if (!arm || !source) return next;
+  const lanes = dir === 'in' ? arm.lanesIn : arm.lanesOut;
+  const sourceLanes = dir === 'in' ? source.lanesIn : source.lanesOut;
+  if (!lanes[laneIndex] || !sourceLanes[laneIndex]) return next;
+  const radius = sourceLanes[laneIndex].filletRadius ?? 15;
+  lanes[laneIndex].filletRadius = Math.max(5, Math.round((radius + dot(delta, direction)) * 10) / 10);
+  return next;
+}
+
+export function dragBypassRadius(bypassId: string, direction: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const bypass = next.bypasses?.find(candidate => candidate.id === bypassId);
+  const source = original.bypasses?.find(candidate => candidate.id === bypassId);
+  if (bypass && source) bypass.radius = Math.max(8, Math.round((source.radius + dot(delta, direction)) * 10) / 10);
+  return next;
+}
+
+export function dragLaneRingTarget(armId: string, dir: 'in' | 'out', laneIndex: number, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const arm = next.arms.find(candidate => candidate.id === armId);
+  const sourceArm = original.arms.find(candidate => candidate.id === armId);
+  if (!arm || !sourceArm || next.rings.length === 0) return next;
+  const sourceRingId = dir === 'in' ? sourceArm.lanesIn[laneIndex]?.targetsRing : sourceArm.lanesOut[laneIndex]?.sourceRing;
+  if (!sourceRingId) return next;
+  const sourceCenter = original.rings.find(ring => ring.id === sourceRingId)?.center ?? original.rings[0].center;
+  const pointer = add(sourceCenter, delta);
+  const nearest = next.rings.reduce((best, ring) => len(sub(ring.center, pointer)) < len(sub(best.center, pointer)) ? ring : best);
+  if (dir === 'in') {
+    if (arm.lanesIn[laneIndex]) arm.lanesIn[laneIndex].targetsRing = nearest.id;
+  } else if (arm.lanesOut[laneIndex]) {
+    arm.lanesOut[laneIndex].sourceRing = nearest.id;
+  }
   return next;
 }
 
@@ -55,6 +124,18 @@ export function dragTangentHandle(armId: string, nodeId: string, which: 'in' | '
     const oppositeLength = len(currentHandle(originalArm.nodes, index, opposite));
     arm.nodes[index][opposite === 'in' ? 'tangentIn' : 'tangentOut'] = scale(norm(moved), -oppositeLength);
   }
+  return next;
+}
+
+export function removeArmNode(original: RoundaboutConfig, armId: string, nodeId: string): RoundaboutConfig {
+  const next = structuredClone(original);
+  const arm = next.arms.find(candidate => candidate.id === armId);
+  if (!arm || arm.nodes.length <= 2) return next;
+  const index = arm.nodes.findIndex(node => node.id === nodeId);
+  if (index < 0) return next;
+  arm.nodes.splice(index, 1);
+  if (arm.nodes[index - 1]) delete arm.nodes[index - 1].tangentOut;
+  if (arm.nodes[index]) delete arm.nodes[index].tangentIn;
   return next;
 }
 
