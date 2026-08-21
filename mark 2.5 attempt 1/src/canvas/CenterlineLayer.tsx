@@ -84,14 +84,15 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected }) => {
 
   return (
     <g>
-      <path
-        d={d}
-        fill="none"
-        stroke={selected ? '#2563eb' : 'rgba(37, 99, 235, 0.42)'}
-        strokeWidth={(selected ? 2 : 1.25) * zoom}
-        strokeDasharray={selected ? undefined : `${5 * zoom} ${5 * zoom}`}
-        pointerEvents="none"
-      />
+      {selected && (
+        <path
+          d={d}
+          fill="none"
+          stroke="#2563eb"
+          strokeWidth={2 * zoom}
+          pointerEvents="none"
+        />
+      )}
       <path
         d={d}
         fill="none"
