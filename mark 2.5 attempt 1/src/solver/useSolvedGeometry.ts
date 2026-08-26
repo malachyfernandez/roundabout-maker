@@ -26,7 +26,6 @@ export function useSolvedGeometry(config: RoundaboutConfig, options: SolverOptio
         const routes = compileRoutes(config, { profileEnabled, bypassEnabled });
         segs = solveGeometry(config, routes);
       } catch (e) {
-        console.error(e);
         errs.push(String(e));
       }
       

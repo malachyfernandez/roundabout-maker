@@ -18,7 +18,7 @@ export type ResolvedSegment = {
 
 function generateHue(index: number, total: number): string {
   const hue = (index * 360) / Math.max(total, 1);
-  return `hsl(${hue}, 80%, 50%)`;
+  return `hsl(${hue}, 85%, 62%)`;
 }
 
 // Project a point onto a polyline and return the exact interpolated point
@@ -80,19 +80,18 @@ function countSegments(routes: RouteSymbolic[]): number {
 
 export function solveGeometry(
   config: RoundaboutConfig,
-  routes: RouteSymbolic[]
+  routes: RouteSymbolic[],
 ): ResolvedSegment[] {
   const resolved: ResolvedSegment[] = [];
   const totalSegs = countSegments(routes);
   let colorIdx = 0;
 
   const entryWidth = (leg: EntryLeg) => {
-    const arm = config.arms.find((a) => a.id === leg.armId)!;
-    return arm.nodes[0].laneWidthsIn[leg.laneIdx] || 10;
+    // Use the lane path's near-end width (already orientation-normalized in compileRoutes).
+    return leg.widths[0] ?? 10;
   };
   const exitWidth = (leg: ExitLeg) => {
-    const arm = config.arms.find((a) => a.id === leg.armId)!;
-    return arm.nodes[0].laneWidthsOut[leg.laneIdx] || 10;
+    return leg.widths[0] ?? 10;
   };
 
   const pushEntry = (routeId: string, leg: EntryLeg, ringWidth: number, segIndex: number) => {

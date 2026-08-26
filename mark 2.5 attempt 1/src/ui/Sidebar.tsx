@@ -1,6 +1,6 @@
 import React from 'react';
 import { type RoundaboutConfig } from '../config/types';
-import { isFeatureEnabled, useEditorStore } from '../editor/editorStore';
+import { useEditorStore } from '../editor/editorStore';
 import { RoadProfileEditor } from './RoadProfileEditor';
 import { MARKING_RULES } from '../rendering/markings';
 
@@ -17,30 +17,11 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
   const setActiveTool = useEditorStore(state => state.setActiveTool);
   const setPendingBypassSource = useEditorStore(state => state.setPendingBypassSource);
   const viewMode = useEditorStore(state => state.viewMode);
-  const featureFlags = useEditorStore(state => state.featureFlags);
-  const profileEnabled = isFeatureEnabled(featureFlags, 'roadProfiles');
-  const creationToolsEnabled = isFeatureEnabled(featureFlags, 'creationTools');
-  const bypassEnabled = isFeatureEnabled(featureFlags, 'bypassLanes');
-  const renderedMarkingsEnabled = isFeatureEnabled(featureFlags, 'renderedMarkings');
 
   const handleChange = (updater: (draft: RoundaboutConfig) => void) => {
     const nextConfig = JSON.parse(JSON.stringify(config));
     updater(nextConfig);
     onChange(nextConfig);
-  };
-
-  const generateId = (prefix: string) => `${prefix}_${Math.random().toString(36).substr(2, 4)}`;
-
-  const handleAddRing = () => {
-    handleChange(c => {
-      const maxRadius = c.rings.reduce((max, r) => Math.max(max, r.radius), 50);
-      c.rings.push({
-        id: generateId('ring'),
-        center: { x: 0, y: 0 },
-        radius: maxRadius + 12,
-        width: 12
-      });
-    });
   };
 
   const handleRenameRing = (index: number, newId: string) => {
@@ -61,21 +42,6 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
     });
   };
 
-  const handleAddArm = () => {
-    handleChange(c => {
-      const targetRing = c.rings[0]?.id || "";
-      c.arms.push({
-        id: generateId('arm'),
-        nodes: [
-          { id: generateId('node'), point: { x: 0, y: 0 }, medianWidth: 4, laneWidthsIn: targetRing ? [10] : [], laneWidthsOut: targetRing ? [10] : [] },
-          { id: generateId('node'), point: { x: 0, y: -150 }, medianWidth: 4, laneWidthsIn: targetRing ? [10] : [], laneWidthsOut: targetRing ? [10] : [] }
-        ],
-        lanesIn: targetRing ? [{ targetsRing: targetRing, filletRadius: 40 }] : [],
-        lanesOut: targetRing ? [{ sourceRing: targetRing, filletRadius: 40, dropsRing: false }] : []
-      });
-    });
-  };
-
   const renderGlobal = () => (
     <div>
       <h3>Global Settings</h3>
@@ -91,17 +57,10 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
         </select>
       </label>
       
-      {!creationToolsEnabled && (
-        <div style={{ marginTop: 24 }}>
-          <button data-tooltip="Add another circulatory ring." onClick={handleAddRing}>+ Add Ring</button>
-          <button data-tooltip="Add another approach road." style={{ marginLeft: 8 }} onClick={handleAddArm}>+ Add Road</button>
-        </div>
-      )}
-      
       <p style={{ marginTop: 24, color: '#666', fontStyle: 'italic' }}>
         Click on the island, rings, or lanes in the viewport to edit their specific properties.
       </p>
-      {viewMode !== 'segment' && renderedMarkingsEnabled && (
+      {viewMode !== 'segment' && (
         <details open style={{ marginTop: 18, padding: 10, background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 8 }}>
           <summary data-tooltip="Show the plain-language rules that generate the visible pavement markings." style={{ cursor: 'pointer', fontWeight: 700 }}>Rendered marking rules</summary>
           <p style={{ margin: '7px 0', color: '#64748b', fontSize: 11 }}>MUTCD-inspired schematic rules. Jurisdiction-specific engineering review is still required for construction use.</p>
@@ -216,57 +175,15 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
           </div>
         )}
 
-        {profileEnabled && (
-          <RoadProfileEditor
-            arm={arm}
-            onChange={updated => handleChange(c => { c.arms[i] = updated; })}
-          />
-        )}
-        
-        {/* Nodes Editor (Vertical) */}
-        <div style={{marginTop: 12, borderTop: '1px solid #ddd', paddingTop: 8, display: profileEnabled ? 'none' : 'block'}}>
-          <strong>Road shape</strong>
-          <p style={{ margin: '4px 0 10px', color: '#64748b', fontSize: 12 }}>
-            Drag the blue points and tangent nubs. Click or drag the blue centerline to add a point.
-          </p>
-          {arm.nodes.map((node, ni) => (
-            <div key={node.id} style={{
-              marginBottom: 8, padding: 8, 
-              background: 'rgba(0,0,0,0.05)', 
-              border: '1px solid #ccc', 
-              borderRadius: 4
-            }}>
-              <div><strong>Node {ni}</strong></div>
-              <label style={{display: 'block', marginTop: 4}}>
-                Median Width (ft):
-                <input type="range" min="0" max="30" step="1" value={node.medianWidth} onChange={e => handleChange(c => c.arms[i].nodes[ni].medianWidth = Number(e.target.value))} style={{verticalAlign: 'middle', marginLeft: 8}} />
-                <span style={{marginLeft: 8}}>{node.medianWidth}</span>
-              </label>
-              
-              <div style={{display: 'flex', gap: 8, marginTop: 4}}>
-                {node.laneWidthsIn.map((w, li) => (
-                  <label key={`in-${li}`} style={{fontSize: 12}}>In {li}: <input type="number" style={{width:40}} value={w} onChange={e => handleChange(c => c.arms[i].nodes[ni].laneWidthsIn[li] = Number(e.target.value))} /></label>
-                ))}
-              </div>
-              <div style={{display: 'flex', gap: 8, marginTop: 4}}>
-                {node.laneWidthsOut.map((w, li) => (
-                  <label key={`out-${li}`} style={{fontSize: 12}}>Out {li}: <input type="number" style={{width:40}} value={w} onChange={e => handleChange(c => c.arms[i].nodes[ni].laneWidthsOut[li] = Number(e.target.value))} /></label>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+        <RoadProfileEditor
+          arm={arm}
+          onChange={updated => handleChange(c => { c.arms[i] = updated; })}
+        />
 
         {/* Entry Lanes */}
         <div style={{marginTop: 12, borderTop: '1px solid #ddd', paddingTop: 8}}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <strong>Entry Lanes (In)</strong>
-            {!profileEnabled && (
-              <button onClick={() => handleChange(c => {
-                c.arms[i].lanesIn.push({ targetsRing: c.rings[0]?.id || "", filletRadius: 40 });
-                c.arms[i].nodes.forEach(n => n.laneWidthsIn.push(10));
-              })} style={{ fontSize: 10, padding: '2px 4px' }}>+ Add Lane</button>
-            )}
           </div>
           {arm.lanesIn.map((lane, li) => {
             const isLaneSelected = selection?.kind === 'lane' && selection.armId === arm.id && selection.dir === 'in' && selection.laneIndex === li;
@@ -295,8 +212,7 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                   <span>Fillet R:</span>
                   <input type="number" value={lane.filletRadius} onChange={e => handleChange(c => c.arms[i].lanesIn[li].filletRadius = Number(e.target.value))} />
                 </div>
-                {bypassEnabled && (
-                  <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px solid #dbe3ee' }}>
+                <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px solid #dbe3ee' }}>
                     {bypass ? (
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, color: '#166534', fontSize: 11 }}>
                         <span>Right turn → {bypass.toArmId}, exit {bypass.toLaneIndex + 1}</span>
@@ -316,7 +232,6 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                       >Connect right-turn bypass…</button>
                     )}
                   </div>
-                )}
               </div>
             );
           })}
@@ -326,12 +241,6 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
         <div style={{marginTop: 8, borderTop: '1px solid #ddd', paddingTop: 8}}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <strong>Exit Lanes (Out)</strong>
-            {!profileEnabled && (
-              <button onClick={() => handleChange(c => {
-                c.arms[i].lanesOut.push({ sourceRing: c.rings[0]?.id || "", filletRadius: 40, dropsRing: false });
-                c.arms[i].nodes.forEach(n => n.laneWidthsOut.push(10));
-              })} style={{ fontSize: 10, padding: '2px 4px' }}>+ Add Lane</button>
-            )}
           </div>
           {arm.lanesOut.map((lane, li) => {
             const isLaneSelected = selection?.kind === 'lane' && selection.armId === arm.id && selection.dir === 'out' && selection.laneIndex === li;

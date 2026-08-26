@@ -1,19 +1,41 @@
 import React, { useState, useRef } from 'react';
+import { ArrowLeftRight } from 'lucide-react';
 import { type ResolvedSegment } from '../core/solver';
-import { isFeatureEnabled, useEditorStore } from '../editor/editorStore';
+import { useEditorStore } from '../editor/editorStore';
 import { GeometryLayer } from '../canvas/GeometryLayer';
 import { HandlesLayer } from '../canvas/HandlesLayer';
 import { CenterlineLayer } from '../canvas/CenterlineLayer';
 import { MarkingsLayer } from '../canvas/MarkingsLayer';
-import { screenToWorld } from './transform';
+import { FloatingButton } from '../ui/FloatingButton';
+import { screenToWorld, worldToScreen } from './transform';
 import { type Vec2, len, sub } from '../math/vector';
 import { isRightTurnPair } from '../core/bypass';
+import { swapArmDirection } from '../editor/constraints';
 
 type Props = {
   segments: ResolvedSegment[];
 };
 
 const DEFAULT_BACKGROUND = '/default-background.png';
+const PASS_THROUGH_EXIT_TOLERANCE = 12;
+
+const hitTestTargets = (x: number, y: number, passThroughStack: string[]) => {
+  const elements = document.elementsFromPoint(x, y);
+  const targetElement = elements.find(element => {
+    const target = element.getAttribute('data-target');
+    return target && !passThroughStack.includes(target);
+  }) ?? null;
+  return { elements, targetElement, target: targetElement?.getAttribute('data-target') ?? null };
+};
+
+const isTooltipElement = (element: Element) =>
+  element.hasAttribute('data-tooltip-error') ||
+  element.hasAttribute('data-tooltip') ||
+  element.hasAttribute('data-target') ||
+  element.hasAttribute('data-handle') ||
+  element instanceof HTMLButtonElement ||
+  element instanceof HTMLInputElement ||
+  element instanceof HTMLSelectElement;
 
 export const Viewport: React.FC<Props> = ({ segments }) => {
   const getStored = <T,>(key: string, fallback: T): T => {
@@ -51,6 +73,8 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
 
   const [isDragging, setIsDragging] = useState(false);
   const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 });
+  const lastMouseRef = useRef({ x: 0, y: 0 });
+  const passThroughContactRef = useRef<{ x: number; y: number } | null>(null);
   
   const svgRef = useRef<SVGSVGElement>(null);
   const setSelection = useEditorStore(state => state.setSelection);
@@ -59,7 +83,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   const committedConfig = useEditorStore(state => state.committedConfig);
   const draftConfig = useEditorStore(state => state.draftConfig);
   const setCommittedConfig = useEditorStore(state => state.setCommittedConfig);
-  const featureFlags = useEditorStore(state => state.featureFlags);
+  const selection = useEditorStore(state => state.selection);
   const viewMode = useEditorStore(state => state.viewMode);
   const activeTool = useEditorStore(state => state.activeTool);
   const setActiveTool = useEditorStore(state => state.setActiveTool);
@@ -67,11 +91,11 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   const setPendingRoadStart = useEditorStore(state => state.setPendingRoadStart);
   const pendingBypassSource = useEditorStore(state => state.pendingBypassSource);
   const setPendingBypassSource = useEditorStore(state => state.setPendingBypassSource);
+  const settings = useEditorStore(state => state.settings);
+  const pushPassThrough = useEditorStore(state => state.pushPassThrough);
+  const clearPassThrough = useEditorStore(state => state.clearPassThrough);
   const [toolPointer, setToolPointer] = useState<Vec2 | null>(null);
-  const creationToolsEnabled = isFeatureEnabled(featureFlags, 'creationTools');
-  const bypassEnabled = isFeatureEnabled(featureFlags, 'bypassLanes');
-  const renderedMarkingsEnabled = isFeatureEnabled(featureFlags, 'renderedMarkings');
-  const modalToolActive = (creationToolsEnabled && (activeTool === 'add-road' || activeTool === 'add-ring')) || (bypassEnabled && activeTool === 'connect-bypass');
+  const modalToolActive = activeTool === 'add-road' || activeTool === 'add-ring' || activeTool === 'connect-bypass';
 
   const baseViewSize = 400;
   const width = baseViewSize * zoom;
@@ -79,42 +103,118 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   const vx = pan.x - width / 2;
   const vy = pan.y - height / 2;
 
-  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9;
-    
-    if (!svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const cursorX = e.clientX - rect.left;
-    const cursorY = e.clientY - rect.top;
-    
-    const svgCursorX = vx + (cursorX / rect.width) * width;
-    const svgCursorY = vy + (cursorY / rect.height) * height;
+  // Native non-passive wheel listener so preventDefault works for trackpad gestures.
+  // React's onWheel uses passive listeners in some browsers, making preventDefault a no-op.
+  React.useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
 
-    const newZoom = zoom * zoomFactor;
-    const newWidth = baseViewSize * newZoom;
-    const newHeight = baseViewSize * newZoom;
-    
-    const newVx = svgCursorX - (cursorX / rect.width) * newWidth;
-    const newVy = svgCursorY - (cursorY / rect.height) * newHeight;
-    
-    setZoom(newZoom);
-    setPan({ x: newVx + newWidth / 2, y: newVy + newHeight / 2 });
-  };
+      // Pinch-to-zoom on trackpads fires with ctrlKey=true.
+      // Two-finger panning fires with ctrlKey=false and both deltaX/deltaY set.
+      if (e.ctrlKey) {
+        // Pinch zoom — uses zoomSensitivity from settings
+        const intensity = Math.min(Math.abs(e.deltaY) / 80, 2);
+        const zoomFactor = e.deltaY > 0 ? 1 + settings.zoomSensitivity * intensity : 1 - settings.zoomSensitivity * intensity;
+
+        const cursorX = e.clientX - rect.left;
+        const cursorY = e.clientY - rect.top;
+        const svgCursorX = vx + (cursorX / rect.width) * width;
+        const svgCursorY = vy + (cursorY / rect.height) * height;
+
+        const newZoom = Math.max(0.1, Math.min(20, zoom * zoomFactor));
+        const newWidth = baseViewSize * newZoom;
+        const newHeight = baseViewSize * newZoom;
+
+        const newVx = svgCursorX - (cursorX / rect.width) * newWidth;
+        const newVy = svgCursorY - (cursorY / rect.height) * newHeight;
+
+        setZoom(newZoom);
+        setPan({ x: newVx + newWidth / 2, y: newVy + newHeight / 2 });
+      } else {
+        // Two-finger pan (trackpad) or mouse wheel scroll.
+        // Convert screen-pixel delta to world coordinates using the
+        // world-to-screen ratio (scales with zoom level).
+        const worldPerPixel = width / rect.width;
+        const dx = e.deltaX * worldPerPixel * settings.panSensitivity;
+        const dy = e.deltaY * worldPerPixel * settings.panSensitivity;
+        setPan(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+      }
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+  }, [zoom, vx, vy, width, height, settings]);
+
+  // Re-evaluate hover at the last known mouse position, skipping passed-through targets.
+  // Used both by pointermove and the P key handler so hover updates immediately.
+  const reevaluateHover = React.useCallback(() => {
+    const { x, y } = lastMouseRef.current;
+    const stack = useEditorStore.getState().passThroughStack;
+    const { elements, targetElement, target } = hitTestTargets(x, y, stack);
+    const handleElement = elements.find(element => element.getAttribute('data-handle') === 'true') ?? null;
+
+    if (target && !handleElement) {
+      try { setHovered(JSON.parse(target)); } catch { setHovered(null); }
+    } else {
+      setHovered(null);
+    }
+
+    if (stack.length === 0) {
+      passThroughContactRef.current = null;
+    } else {
+      const stillOverPassed = elements.some(element => {
+        const elementTarget = element.getAttribute('data-target');
+        return elementTarget && stack.includes(elementTarget);
+      });
+      if (stillOverPassed) {
+        passThroughContactRef.current = { x, y };
+      } else if (passThroughContactRef.current && Math.hypot(x - passThroughContactRef.current.x, y - passThroughContactRef.current.y) > PASS_THROUGH_EXIT_TOLERANCE) {
+        clearPassThrough();
+        passThroughContactRef.current = null;
+      }
+    }
+
+    const tooltipElement = handleElement ?? targetElement ?? elements.find(element => {
+      const elementTarget = element.getAttribute('data-target');
+      return (!elementTarget || !stack.includes(elementTarget)) && isTooltipElement(element);
+    }) ?? null;
+    window.dispatchEvent(new CustomEvent('tooltip-reevaluate', { detail: { x, y, element: tooltipElement } }));
+  }, [setHovered, clearPassThrough]);
+
+  // Pass-through keyboard shortcut: press P to pass through the currently hovered target
+  React.useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key !== 'p' && event.key !== 'P') return;
+      const hovered = useEditorStore.getState().hovered;
+      if (!hovered) return;
+      event.preventDefault();
+      passThroughContactRef.current = { ...lastMouseRef.current };
+      pushPassThrough(JSON.stringify(hovered));
+      // Immediately re-evaluate hover so the item below is highlighted without moving the mouse
+      requestAnimationFrame(reevaluateHover);
+    };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [pushPassThrough, reevaluateHover]);
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     // If we clicked a handle, let the handle capture it.
     if ((e.target as Element).closest('[data-handle]')) return;
+
+    lastMouseRef.current = { x: e.clientX, y: e.clientY };
+    const hit = hitTestTargets(e.clientX, e.clientY, useEditorStore.getState().passThroughStack);
 
     if (modalToolActive) {
       const point = screenToWorld(e, e.currentTarget);
       const next = structuredClone(committedConfig);
       const id = Math.random().toString(36).slice(2, 7);
       if (activeTool === 'connect-bypass') {
-        const targetElement = (e.target as Element).closest('[data-target]');
-        if (!targetElement || !pendingBypassSource) return;
+        if (!hit.target || !pendingBypassSource) return;
         try {
-          const target = JSON.parse(targetElement.getAttribute('data-target')!);
+          const target = JSON.parse(hit.target);
           const sourceArm = next.arms.find(arm => arm.id === pendingBypassSource.armId);
           const targetArm = next.arms.find(arm => arm.id === target.armId);
           if (target.kind !== 'lane' || target.dir !== 'out' || !isRightTurnPair(sourceArm, targetArm)) return;
@@ -151,11 +251,18 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         if (len(sub(point, pendingRoadStart)) < 20) return;
         const armId = `road_${id}`;
         const ringId = next.rings[0]?.id || '';
+        // Order nodes so the one closest to the roundabout center is nodes[0].
+        // The road direction is defined by node order: nodes[0] is the roundabout-facing end.
+        const islandCenter = next.island.center;
+        const distStart = len(sub(pendingRoadStart, islandCenter));
+        const distEnd = len(sub(point, islandCenter));
+        const nearPoint = distStart <= distEnd ? pendingRoadStart : point;
+        const farPoint = distStart <= distEnd ? point : pendingRoadStart;
         next.arms.push({
           id: armId,
           nodes: [
-            { id: `${armId}_0`, point: pendingRoadStart, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] },
-            { id: `${armId}_1`, point, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] }
+            { id: `${armId}_0`, point: nearPoint, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] },
+            { id: `${armId}_1`, point: farPoint, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] }
           ],
           lanesIn: ringId ? [{ targetsRing: ringId, filletRadius: 40 }] : [],
           lanesOut: ringId ? [{ sourceRing: ringId, filletRadius: 40, dropsRing: false }] : []
@@ -168,12 +275,8 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
     }
     
     // Otherwise, check if we hit a geometry element
-    const targetEl = (e.target as Element).closest('[data-target]');
-    if (targetEl) {
-      try {
-        const source = JSON.parse(targetEl.getAttribute('data-target')!);
-        setSelection(source);
-      } catch {}
+    if (hit.target) {
+      try { setSelection(JSON.parse(hit.target)); } catch { setSelection(null); }
     } else {
       setSelection(null);
     }
@@ -189,14 +292,13 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
       return;
     }
 
-    // Hover logic
+    // Track mouse position for immediate re-evaluation (e.g. after P key)
+    lastMouseRef.current = { x: e.clientX, y: e.clientY };
+
+    // Hover logic — use elementsFromPoint to find all targets at this point,
+    // then skip any that are in the pass-through stack.
     if (!isDragging && !activeDrag) {
-      const targetEl = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-target]');
-      if (targetEl) {
-        try { setHovered(JSON.parse(targetEl.getAttribute('data-target')!)); } catch {}
-      } else {
-        setHovered(null);
-      }
+      reevaluateHover();
     }
 
     if (!isDragging) return;
@@ -259,8 +361,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         ref={svgRef}
         viewBox={`${vx} ${vy} ${width} ${height}`} 
         style={{ width: '100%', height: '100%', cursor: modalToolActive ? 'crosshair' : isDragging ? 'grabbing' : 'default', touchAction: 'none' }}
-        data-tooltip={activeTool === 'connect-bypass' ? 'Click a highlighted exit lane on another road to complete the right-turn bypass.' : creationToolsEnabled && activeTool === 'add-road' ? (pendingRoadStart ? 'Click to place the outer endpoint of the new road.' : 'Click to place the roundabout end of the new road.') : creationToolsEnabled && activeTool === 'add-ring' ? 'Click to place a new ring center.' : undefined}
-        onWheel={handleWheel}
+        data-tooltip={activeTool === 'connect-bypass' ? 'Click a highlighted exit lane on another road to complete the right-turn bypass.' : activeTool === 'add-road' ? (pendingRoadStart ? 'Click to place the outer endpoint of the new road.' : 'Click to place the roundabout end of the new road.') : activeTool === 'add-ring' ? 'Click to place a new ring center.' : undefined}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -278,26 +379,99 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
             pointerEvents="none"
           />
         )}
-        {creationToolsEnabled && activeTool === 'add-road' && pendingRoadStart && toolPointer && (
+        {activeTool === 'add-road' && pendingRoadStart && toolPointer && (
           <g pointerEvents="none">
             <line x1={pendingRoadStart.x} y1={pendingRoadStart.y} x2={toolPointer.x} y2={toolPointer.y} stroke="#2563eb" strokeWidth={2 * zoom} strokeDasharray={`${6 * zoom} ${4 * zoom}`} />
             <circle cx={pendingRoadStart.x} cy={pendingRoadStart.y} r={5 * zoom} fill="#fff" stroke="#2563eb" strokeWidth={2 * zoom} />
             <circle cx={toolPointer.x} cy={toolPointer.y} r={5 * zoom} fill="#dbeafe" stroke="#2563eb" strokeWidth={2 * zoom} />
           </g>
         )}
-        {creationToolsEnabled && activeTool === 'add-ring' && toolPointer && (
+        {activeTool === 'add-ring' && toolPointer && (
           <g pointerEvents="none">
             <circle cx={toolPointer.x} cy={toolPointer.y} r={35} fill="rgba(37,99,235,.08)" stroke="#2563eb" strokeWidth={2 * zoom} strokeDasharray={`${5 * zoom} ${4 * zoom}`} />
             <circle cx={toolPointer.x} cy={toolPointer.y} r={3.5 * zoom} fill="#2563eb" />
           </g>
         )}
         <GeometryLayer config={draftConfig || committedConfig} segments={segments} zoom={zoom} />
-        {renderedMarkingsEnabled && viewMode !== 'segment' && (
+        {viewMode !== 'segment' && (
           <MarkingsLayer config={draftConfig || committedConfig} segments={segments} zoom={zoom} />
         )}
         <CenterlineLayer config={draftConfig || committedConfig} zoom={zoom} />
         <HandlesLayer zoom={zoom} segments={segments} />
       </svg>
+      {selection?.kind === 'arm' && svgRef.current && (() => {
+        const svg = svgRef.current;
+        const arm = (draftConfig || committedConfig).arms.find(a => a.id === selection.armId);
+        if (!arm || arm.nodes.length === 0) return null;
+        const rect = svg.getBoundingClientRect();
+
+        // Convert both end nodes to screen space.
+        // worldToScreen uses getScreenCTM() which already returns absolute
+        // screen coordinates — no need to add rect.left/rect.top.
+        const nearNode = arm.nodes[0];
+        const farNode = arm.nodes[arm.nodes.length - 1];
+        const nearScreen = worldToScreen(nearNode.point, svg);
+        const farScreen = worldToScreen(farNode.point, svg);
+
+        // Pick the endpoint closest to the center of the viewport (screen center)
+        const viewportCenterX = rect.left + rect.width / 2;
+        const viewportCenterY = rect.top + rect.height / 2;
+        const nearDist = Math.hypot(nearScreen.x - viewportCenterX, nearScreen.y - viewportCenterY);
+        const farDist = Math.hypot(farScreen.x - viewportCenterX, farScreen.y - viewportCenterY);
+        const anchorPoint = nearDist <= farDist ? nearScreen : farScreen;
+
+        // Bounds = the SVG element's screen rect (so button stays within the canvas)
+        const bounds = { left: rect.left, top: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height };
+
+        return (
+          <FloatingButton
+            key={selection.armId}
+            storageKey="swap_direction"
+            anchorPoint={anchorPoint}
+            defaultOffset={{ x: 24, y: -48 }}
+            bounds={bounds}
+            label="Swap Direction"
+            tooltip="Reverse the road's direction so the other end connects to the roundabout."
+            icon={<ArrowLeftRight size={14} />}
+            onClick={() => {
+              const next = swapArmDirection(committedConfig, selection.armId);
+              setCommittedConfig(next);
+            }}
+          />
+        );
+      })()}
+      {selection?.kind === 'lane' && selection.dir === 'out' && svgRef.current && (() => {
+        const svg = svgRef.current;
+        const config = draftConfig || committedConfig;
+        const arm = config.arms.find(a => a.id === selection.armId);
+        const lane = arm?.lanesOut[selection.laneIndex];
+        if (!arm || !lane) return null;
+        const ring = config.rings.find(r => r.id === lane.sourceRing);
+        if (!ring) return null;
+        const rect = svg.getBoundingClientRect();
+        const anchorPoint = worldToScreen(ring.center, svg);
+        const bounds = { left: rect.left, top: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height };
+        return (
+          <FloatingButton
+            key={`${selection.armId}-out-${selection.laneIndex}-drops`}
+            storageKey="drops_ring"
+            anchorPoint={anchorPoint}
+            defaultOffset={{ x: 24, y: -24 }}
+            bounds={bounds}
+            label="Drops Ring"
+            tooltip="When checked, this exit lane drops the remainder of its source ring instead of continuing the circle."
+            checked={lane.dropsRing}
+            onClick={() => {
+              const next = structuredClone(committedConfig);
+              const targetArm = next.arms.find(a => a.id === selection.armId);
+              if (targetArm?.lanesOut[selection.laneIndex]) {
+                targetArm.lanesOut[selection.laneIndex].dropsRing = !targetArm.lanesOut[selection.laneIndex].dropsRing;
+              }
+              setCommittedConfig(next);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 };

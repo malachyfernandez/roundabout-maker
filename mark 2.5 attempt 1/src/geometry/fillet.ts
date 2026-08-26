@@ -155,7 +155,7 @@ export function solveFillet(
     }
     if (bestSolution) break;
   }
-  
+
   return bestSolution;
 }
 

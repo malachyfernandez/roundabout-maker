@@ -114,9 +114,7 @@ export function evaluateSpline(spline: CatmullRomSpline, t: number): { p: Vec2, 
   const t3 = getT(t2, p2, p3);
 
   // If t1 == t2, points are coincident
-  if (Math.abs(t2 - t1) < 1e-6) {
-    return { p: p1, tangent: normalize(sub(p2, p0)) };
-  }
+  if (Math.abs(t2 - t1) < 1e-6) return { p: p1, tangent: normalize(sub(p2, p0)) };
 
   // Remap localT to [t1, t2]
   const t_eval = t1 + localT * (t2 - t1);
@@ -155,7 +153,6 @@ export function evaluateSpline(spline: CatmullRomSpline, t: number): { p: Vec2, 
   const p_minus = A1(t1, t2, b1m, b2m, t_eval_minus);
 
   const tangent = normalize(sub(p_plus, p_minus));
-
   return { p, tangent };
 }
 
@@ -167,7 +164,8 @@ export function sampleSpline(spline: CatmullRomSpline, numSamples: number = 20) 
   for (let i = 0; i <= numSamples; i++) {
     const t = i / numSamples;
     const { p, tangent } = evaluateSpline(spline, t);
-    samples.push({ p, tangent, normal: perpLeft(tangent) });
+    const normal = perpLeft(tangent);
+    samples.push({ p, tangent, normal });
   }
   return samples;
 }

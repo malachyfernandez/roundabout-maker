@@ -1,7 +1,7 @@
 import { type RoundaboutConfig } from './config';
 import { solveFillet, type FilletSolution } from '../geometry/fillet';
 import { type Line, normalizeAngle } from '../geometry/primitives';
-import { sub, normalize, dot, len } from '../math/vector';
+import { sub, normalize, dot, len, type Vec2 } from '../math/vector';
 import { offsetSpline } from '../math/spline';
 import { laneOffsetAt, sampleProfile } from './profile';
 
@@ -98,29 +98,64 @@ function solveFilletAlongPath(
   isEntry: boolean,
   circDir: 1 | -1
 ): { line: Line; fillet: FilletSolution } | null {
-  let best: { line: Line; fillet: FilletSolution; distance: number } | null = null;
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i];
-    const b = points[i + 1];
-    const outward = normalize(sub(b, a));
-    if (len(outward) < 1e-9) continue;
-    const line: Line = {
-      kind: 'line',
-      p: isEntry ? b : a,
-      u: isEntry ? { x: -outward.x, y: -outward.y } : outward,
-      t0: -1000,
-      t1: 1000
-    };
-    const fillet = solveFillet(line, ringCenter, ringRadius, filletRadius, turnDir, isEntry, circDir);
-    if (!fillet) continue;
-    const edge = sub(b, a);
-    const edgeLengthSquared = dot(edge, edge);
-    const t = Math.max(0, Math.min(1, dot(sub(fillet.tangentPointLine, a), edge) / edgeLengthSquared));
-    const projected = { x: a.x + edge.x * t, y: a.y + edge.y * t };
-    const distance = len(sub(fillet.tangentPointLine, projected));
-    if (!best || distance < best.distance) best = { line, fillet, distance };
+  // Try the requested fillet radius first, then progressively reduce it.
+  // This handles cases where the requested radius is too large for the
+  // approach angle (e.g. filletRadius > ringRadius at certain angles).
+  const minFilletRadius = Math.max(2, ringRadius * 0.1);
+  const radiiToTry = [filletRadius];
+  for (let r = filletRadius * 0.75; r >= minFilletRadius; r *= 0.75) {
+    radiiToTry.push(r);
   }
-  return best ? { line: best.line, fillet: best.fillet } : null;
+
+  for (const tryRadius of radiiToTry) {
+    let best: { line: Line; fillet: FilletSolution; distance: number } | null = null;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const outward = normalize(sub(b, a));
+      if (len(outward) < 1e-9) continue;
+      const line: Line = {
+        kind: 'line',
+        p: isEntry ? b : a,
+        u: isEntry ? { x: -outward.x, y: -outward.y } : outward,
+        t0: -1000,
+        t1: 1000
+      };
+      const fillet = solveFillet(line, ringCenter, ringRadius, tryRadius, turnDir, isEntry, circDir);
+      if (!fillet) continue;
+      const edge = sub(b, a);
+      const edgeLengthSquared = dot(edge, edge);
+      const t = Math.max(0, Math.min(1, dot(sub(fillet.tangentPointLine, a), edge) / edgeLengthSquared));
+      const projected = { x: a.x + edge.x * t, y: a.y + edge.y * t };
+      const distance = len(sub(fillet.tangentPointLine, projected));
+      if (!best || distance < best.distance) best = { line, fillet, distance };
+    }
+    if (best) return { line: best.line, fillet: best.fillet };
+  }
+  return null;
+}
+
+export function solveLaneRingAttachmentPoint(config: RoundaboutConfig, armId: string, dir: 'in' | 'out', laneIndex: number, ringId: string): Vec2 | null {
+  const arm = config.arms.find(candidate => candidate.id === armId);
+  const ring = config.rings.find(candidate => candidate.id === ringId);
+  const lane = dir === 'in' ? arm?.lanesIn[laneIndex] : arm?.lanesOut[laneIndex];
+  if (!arm || !ring || !lane || arm.nodes.length < 2) return null;
+
+  const baseSpline = {
+    points: arm.nodes.map(node => node.point),
+    nodes: arm.nodes,
+    alpha: 0.5,
+    tension: 0
+  };
+  const profile = sampleProfile(arm, baseSpline, 90);
+  const isEntry = dir === 'in';
+  const isRHD = config.circulation === 'ccw';
+  const offsets = profile.sections.map(section => laneOffsetAt(section, laneIndex, isEntry, isRHD));
+  const points = offsetSpline(baseSpline, offsets, 90);
+  const filletRadius = lane.filletRadius || 15;
+  const turnDir = isRHD ? -1 : 1;
+  const solved = solveFilletAlongPath(points, ring.center, ring.radius, filletRadius, turnDir, isEntry, getCircDir(config.circulation));
+  return solved?.fillet.tangentPointRing ?? null;
 }
 
 function indexAtDistance(points: { x: number; y: number }[], target: number) {
@@ -158,7 +193,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
 
   for (const arm of config.arms) {
     if (arm.nodes.length < 2) continue;
-    
+
     const baseSpline = {
       points: arm.nodes.map(n => n.point),
       nodes: arm.nodes,
@@ -206,7 +241,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       const widths = profileSample
         ? profileSample.sections.map(section => section.lanesIn[i]?.width ?? 0)
         : lanePoints.map(() => arm.nodes[0].laneWidthsIn[i] || 10);
-      
+
       // Lane points go from center to out. The entry vector goes from out to center.
       // So tangent at [0] goes from center to out. We negate it for uIn.
       const pNear = lanePoints[0];
@@ -231,7 +266,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       const widths = profileSample
         ? profileSample.sections.map(section => section.lanesOut[i]?.width ?? 0)
         : lanePoints.map(() => arm.nodes[0].laneWidthsOut[i] || 10);
-      
+
       // Exit vector goes from center to out.
       const pNear = lanePoints[0];
       const pNext = lanePoints[1];
@@ -325,15 +360,33 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
   const getRing = (id: string) => config.rings.find((r) => r.id === id)!;
   const turnDir = isRHD ? -1 : 1;
 
+  // Track which lanes successfully connected to a ring via fillet.
+  // Lanes that don't connect will be rendered as standalone roads.
+  const connectedLanes = new Set<string>();
+
+  // Geometric check: is the connecting node (nodes[0], the roundabout-facing end)
+  // within the outer circle of the target ring? If not, the road doesn't reach
+  // the roundabout and should be rendered as a standalone road.
+  const nodeWithinRing = (nodePoint: { x: number; y: number }, ring: { center: { x: number; y: number }; radius: number; width: number }) => {
+    const outerRadius = ring.radius + ring.width / 2;
+    return len(sub(nodePoint, ring.center)) <= outerRadius;
+  };
+
   for (const arm of config.arms) {
+    const connectingNode = arm.nodes[0]?.point;
+    if (!connectingNode) continue;
+
     for (let i = 0; i < arm.lanesIn.length; i++) {
       if (bypassEntries.has(`${arm.id}_${i}`) || profileLaneKeys.has(`${arm.id}_in_${i}`)) continue;
       const lane = arm.lanesIn[i];
       const ring = getRing(lane.targetsRing);
+      // Only attempt connection if the connecting node is within the ring's outer circle.
+      if (!nodeWithinRing(connectingNode, ring)) continue;
       const path = lanePaths.get(`${arm.id}_in_${i}`)!;
       const rFillet = lane.filletRadius || 15;
       const solved = solveFilletAlongPath(path.points, ring.center, ring.radius, rFillet, turnDir, true, circDir);
       if (solved) {
+        connectedLanes.add(`${arm.id}_in_${i}`);
         ringCuts.get(ring.id)!.push({
           type: 'entry', armId: arm.id, laneIdx: i,
           angle: solved.fillet.cutAngleRing, fillet: solved.fillet, line: solved.line, dropsRing: false,
@@ -345,10 +398,12 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       if (bypassExits.has(`${arm.id}_${i}`) || profileLaneKeys.has(`${arm.id}_out_${i}`)) continue;
       const lane = arm.lanesOut[i];
       const ring = getRing(lane.sourceRing);
+      if (!nodeWithinRing(connectingNode, ring)) continue;
       const path = lanePaths.get(`${arm.id}_out_${i}`)!;
       const rFillet = lane.filletRadius || 15;
       const solved = solveFilletAlongPath(path.points, ring.center, ring.radius, rFillet, turnDir, false, circDir);
       if (solved) {
+        connectedLanes.add(`${arm.id}_out_${i}`);
         ringCuts.get(ring.id)!.push({
           type: 'exit', armId: arm.id, laneIdx: i,
           angle: solved.fillet.cutAngleRing, fillet: solved.fillet, line: solved.line, dropsRing: lane.dropsRing,
@@ -357,8 +412,44 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     }
   }
 
+  // Build standalone road routes for lanes that didn't connect to any ring.
+  // These are roads that don't intersect the roundabout — render them as plain roads.
+  const standaloneRoadRoutes: ProfileLaneRoute[] = [];
+  for (const arm of config.arms) {
+    for (let i = 0; i < arm.lanesIn.length; i++) {
+      const key = `${arm.id}_in_${i}`;
+      if (connectedLanes.has(key) || bypassEntries.has(`${arm.id}_${i}`) || profileLaneKeys.has(key)) continue;
+      const path = lanePaths.get(key);
+      if (!path) continue;
+      standaloneRoadRoutes.push({
+        kind: 'profile-lane',
+        id: `standalone_${key}`,
+        armId: arm.id,
+        laneIdx: i,
+        dir: 'in',
+        points: path.points,
+        widths: path.widths,
+      });
+    }
+    for (let i = 0; i < arm.lanesOut.length; i++) {
+      const key = `${arm.id}_out_${i}`;
+      if (connectedLanes.has(key) || bypassExits.has(`${arm.id}_${i}`) || profileLaneKeys.has(key)) continue;
+      const path = lanePaths.get(key);
+      if (!path) continue;
+      standaloneRoadRoutes.push({
+        kind: 'profile-lane',
+        id: `standalone_${key}`,
+        armId: arm.id,
+        laneIdx: i,
+        dir: 'out',
+        points: path.points,
+        widths: path.widths,
+      });
+    }
+  }
+
   // 3. Compile routes per ring using dropsRing logic
-  const routes: RouteSymbolic[] = [...bypassRoutes, ...profileLaneRoutes];
+  const routes: RouteSymbolic[] = [...bypassRoutes, ...profileLaneRoutes, ...standaloneRoadRoutes];
 
   for (const [ringId, cuts] of ringCuts.entries()) {
     const entries = cuts.filter((c) => c.type === 'entry');

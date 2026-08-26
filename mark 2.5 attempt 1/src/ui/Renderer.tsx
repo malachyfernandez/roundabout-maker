@@ -66,7 +66,7 @@ export const Renderer: React.FC<Props> = ({ segments, island }) => {
 
   const [bgImage, setBgImage] = useState<string | null>(() => localStorage.getItem('roundabout_bg'));
   const [bgOpacity, setBgOpacity] = useState(() => getStored('roundabout_bgOp', 0.5));
-  const [bgSize, setBgSize] = useState(() => getStored('roundabout_bgSize', 400));
+  const [bgSize, setBgSize] = useState(() => getStored('roundabout_bgSize', 200));
 
   const [pan, setPan] = useState(() => getStored('roundabout_pan', { x: 0, y: 0 }));
   const [zoom, setZoom] = useState(() => getStored('roundabout_zoom', 1));

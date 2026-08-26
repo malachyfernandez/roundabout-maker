@@ -1,6 +1,7 @@
 import { type ArmNode, type RoundaboutConfig } from '../config/types';
 import { type Vec2, add, dot, len, lerp, norm, scale, sub } from '../math/vector';
 import { getBezierSegment } from '../math/spline';
+import { solveLaneRingAttachmentPoint } from '../core/routes';
 
 export function dragIslandCenter(delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
   const next = JSON.parse(JSON.stringify(original)) as RoundaboutConfig;
@@ -64,20 +65,35 @@ export function dragBypassRadius(bypassId: string, direction: Vec2, delta: Vec2,
   return next;
 }
 
-export function dragLaneRingTarget(armId: string, dir: 'in' | 'out', laneIndex: number, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+export type LaneRingSnapPoint = { ringId: string; point: Vec2 };
+
+export function getLaneRingSnapPoints(config: RoundaboutConfig, armId: string, dir: 'in' | 'out', laneIndex: number): LaneRingSnapPoint[] {
+  return config.rings.map(ring => {
+    const point = solveLaneRingAttachmentPoint(config, armId, dir, laneIndex, ring.id);
+    if (point) return { ringId: ring.id, point };
+
+    const arm = config.arms.find(candidate => candidate.id === armId);
+    const nearNode = arm?.nodes[0];
+    if (!nearNode) return null;
+    const radial = sub(nearNode.point, ring.center);
+    const distance = len(radial);
+    const fallback = distance > 0
+      ? add(ring.center, scale(radial, ring.radius / distance))
+      : { x: ring.center.x + ring.radius, y: ring.center.y };
+    return { ringId: ring.id, point: fallback };
+  }).filter((point): point is LaneRingSnapPoint => point !== null);
+}
+
+export function dragLaneRingTarget(armId: string, dir: 'in' | 'out', laneIndex: number, sourcePoint: Vec2, snapPoints: LaneRingSnapPoint[], delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
   const next = structuredClone(original);
   const arm = next.arms.find(candidate => candidate.id === armId);
-  const sourceArm = original.arms.find(candidate => candidate.id === armId);
-  if (!arm || !sourceArm || next.rings.length === 0) return next;
-  const sourceRingId = dir === 'in' ? sourceArm.lanesIn[laneIndex]?.targetsRing : sourceArm.lanesOut[laneIndex]?.sourceRing;
-  if (!sourceRingId) return next;
-  const sourceCenter = original.rings.find(ring => ring.id === sourceRingId)?.center ?? original.rings[0].center;
-  const pointer = add(sourceCenter, delta);
-  const nearest = next.rings.reduce((best, ring) => len(sub(ring.center, pointer)) < len(sub(best.center, pointer)) ? ring : best);
+  if (!arm || snapPoints.length === 0) return next;
+  const pointer = add(sourcePoint, delta);
+  const nearest = snapPoints.reduce((best, candidate) => len(sub(candidate.point, pointer)) < len(sub(best.point, pointer)) ? candidate : best);
   if (dir === 'in') {
-    if (arm.lanesIn[laneIndex]) arm.lanesIn[laneIndex].targetsRing = nearest.id;
+    if (arm.lanesIn[laneIndex]) arm.lanesIn[laneIndex].targetsRing = nearest.ringId;
   } else if (arm.lanesOut[laneIndex]) {
-    arm.lanesOut[laneIndex].sourceRing = nearest.id;
+    arm.lanesOut[laneIndex].sourceRing = nearest.ringId;
   }
   return next;
 }
@@ -124,6 +140,28 @@ export function dragTangentHandle(armId: string, nodeId: string, which: 'in' | '
     const oppositeLength = len(currentHandle(originalArm.nodes, index, opposite));
     arm.nodes[index][opposite === 'in' ? 'tangentIn' : 'tangentOut'] = scale(norm(moved), -oppositeLength);
   }
+  return next;
+}
+
+export function swapArmDirection(original: RoundaboutConfig, armId: string): RoundaboutConfig {
+  const next = structuredClone(original);
+  const arm = next.arms.find(candidate => candidate.id === armId);
+  if (!arm) return next;
+  arm.nodes.reverse();
+  // Swap tangent directions for each node since the road now runs the other way.
+  for (const node of arm.nodes) {
+    const tangentIn = node.tangentIn;
+    node.tangentIn = node.tangentOut;
+    node.tangentOut = tangentIn;
+    // Swap lane widths since in/out are relative to direction.
+    const laneWidthsIn = node.laneWidthsIn;
+    node.laneWidthsIn = node.laneWidthsOut;
+    node.laneWidthsOut = laneWidthsIn;
+  }
+  // Swap lanesIn and lanesOut arrays (they reference rings from opposite perspectives).
+  const lanesIn = arm.lanesIn;
+  arm.lanesIn = arm.lanesOut.map(lane => ({ targetsRing: lane.sourceRing, filletRadius: lane.filletRadius }));
+  arm.lanesOut = lanesIn.map(lane => ({ sourceRing: lane.targetsRing, filletRadius: lane.filletRadius, dropsRing: false }));
   return next;
 }
 

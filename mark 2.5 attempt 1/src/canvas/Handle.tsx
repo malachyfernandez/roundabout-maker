@@ -12,12 +12,15 @@ type Props = {
   radius?: number;
   fill?: string;
   stroke?: string;
+  shape?: 'circle' | 'square';
   tooltip?: string;
+  errorTooltip?: string;
+  dragType?: string;
   onDrag: (deltaWorld: Vec2, originalConfig: RoundaboutConfig) => RoundaboutConfig;
   onClick?: (originalConfig: RoundaboutConfig) => RoundaboutConfig;
 };
 
-export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 6, fill = '#fff', stroke = '#000', tooltip, onDrag, onClick }) => {
+export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 6, fill = '#fff', stroke = '#000', shape = 'circle', tooltip, errorTooltip, dragType = 'handle', onDrag, onClick }) => {
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const commitDraft = useEditorStore(state => state.commitDraft);
   const committedConfig = useEditorStore(state => state.committedConfig);
@@ -29,6 +32,7 @@ export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 
   const moved = useRef(false);
 
   const handlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
     e.stopPropagation(); // prevent Viewport from capturing
     e.currentTarget.setPointerCapture(e.pointerId);
     
@@ -38,7 +42,7 @@ export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 
     startPt.current = screenToWorld(e, svgEl);
     startConfig.current = JSON.parse(JSON.stringify(committedConfig));
     moved.current = false;
-    setDrag({ active: true, type: 'handle' });
+    setDrag({ active: true, type: dragType });
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -78,22 +82,47 @@ export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   };
 
+  const handleLostPointerCapture = () => {
+    if (!startPt.current) return;
+    setDraftConfig(null);
+    setDrag(null);
+    startPt.current = null;
+    startConfig.current = null;
+  };
+
   const r = radius * zoom;
+  const commonProps = {
+    fill,
+    stroke,
+    strokeWidth: 2 * zoom,
+    cursor: startPt.current ? 'grabbing' : cursor,
+    onPointerDown: handlePointerDown,
+    onPointerMove: handlePointerMove,
+    onPointerUp: handlePointerUp,
+    onPointerCancel: handlePointerCancel,
+    onLostPointerCapture: handleLostPointerCapture,
+    'data-handle': 'true' as const,
+    'data-tooltip': tooltip,
+    'data-tooltip-error': errorTooltip,
+  };
+  if (shape === 'square') {
+    return (
+      <rect
+        x={x - r}
+        y={y - r}
+        width={r * 2}
+        height={r * 2}
+        rx={r * 0.2}
+        {...commonProps}
+      />
+    );
+  }
   return (
     <circle
       cx={x}
       cy={y}
       r={r}
-      fill={fill}
-      stroke={stroke}
-      strokeWidth={2 * zoom}
-      cursor={startPt.current ? 'grabbing' : cursor}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerCancel}
-      data-handle="true"
-      data-tooltip={tooltip}
+      {...commonProps}
     />
   );
 };

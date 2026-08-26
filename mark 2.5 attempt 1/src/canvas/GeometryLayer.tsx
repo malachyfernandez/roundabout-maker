@@ -2,7 +2,7 @@ import React from 'react';
 import { type Vec2, add, sub, scale, norm, perpLeft } from '../math/vector';
 import { type ResolvedSegment } from '../core/solver';
 import { type Polyline, type Arc, type Line, arcPoint, linePoint, arcTangent } from '../geometry/primitives';
-import { isFeatureEnabled, useEditorStore } from '../editor/editorStore';
+import { useEditorStore } from '../editor/editorStore';
 import { isRightTurnPair } from '../core/bypass';
 
 function generateVariableWidthPath(seg: ResolvedSegment): string {
@@ -85,8 +85,6 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
   const viewMode = useEditorStore(state => state.viewMode);
   const activeTool = useEditorStore(state => state.activeTool);
   const pendingBypassSource = useEditorStore(state => state.pendingBypassSource);
-  const featureFlags = useEditorStore(state => state.featureFlags);
-  const enhancedMarkings = isFeatureEnabled(featureFlags, 'renderedMarkings');
 
   const matches = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -127,6 +125,7 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
     let isSelected = false;
     let isRoadSelected = false;
     let isHovered = false;
+    let isRoadHovered = false;
     
     if (seg.source.kind === 'lane') {
       isSelected = selection?.kind === 'lane'
@@ -138,6 +137,7 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
         && hovered.armId === seg.source.armId
         && hovered.dir === seg.source.dir
         && hovered.laneIndex === seg.source.laneIndex;
+      isRoadHovered = hovered?.kind === 'arm' && hovered.armId === seg.source.armId;
     } else if (seg.source.kind === 'ring') {
       isSelected = selection?.kind === 'ring' && selection.ringId === seg.source.ringId;
       isHovered = hovered?.kind === 'ring' && hovered.ringId === seg.source.ringId;
@@ -152,9 +152,13 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
         config.arms.find(arm => arm.id === pendingBypassSource.armId),
         config.arms.find(arm => arm.id === laneSource.armId)
       );
+
     let fillColor = seg.color;
-    let strokeHighlight = isBypassCandidate ? '#22c55e' : isSelected ? '#facc15' : isRoadSelected ? '#60a5fa' : isHovered ? '#ffffff' : undefined;
-    let opacity = isBypassCandidate || isSelected ? 1 : isRoadSelected ? 0.9 : 0.8;
+    // When a lane is hovered, suppress the road-selected blue tint so the
+    // white hover overlay is the only highlight on that lane.
+    const suppressRoadTint = isHovered;
+    let strokeHighlight = isBypassCandidate ? '#22c55e' : isSelected ? '#facc15' : (isRoadSelected && !suppressRoadTint) ? '#60a5fa' : undefined;
+    let opacity = isBypassCandidate || isSelected ? 1 : (isRoadSelected && !suppressRoadTint) || isRoadHovered ? 0.95 : 0.8;
 
     if (isRendered) {
       fillColor = '#555';
@@ -178,6 +182,7 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
           stroke={strokeHighlight || "none"}
           strokeWidth={strokeHighlight ? (isSelected || isBypassCandidate ? 4 : 2) * zoom : 0}
           opacity={opacity}
+          filter={isRendered ? undefined : 'url(#lane-shadow)'}
           data-target={JSON.stringify(seg.source)}
           data-tooltip={sourceTooltip}
         />
@@ -190,17 +195,6 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
           data-target={JSON.stringify(seg.source)}
           data-tooltip={sourceTooltip}
         />
-        {isRendered && !enhancedMarkings && (
-          <path
-            d={dCenter}
-            fill="none"
-            stroke="rgba(255,255,255,0.7)"
-            strokeWidth={1 * zoom}
-            strokeDasharray="4, 4"
-            strokeLinecap="butt"
-            pointerEvents="none"
-          />
-        )}
         {!isRendered && (
           <path
             d={dCenter}
@@ -211,51 +205,25 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
             pointerEvents="none"
           />
         )}
-        {/* Rendered Selection Overlay */}
-        {isRendered && (isSelected || isRoadSelected || isHovered) && (
+        {/* Hover overlay — white lightening, works in all view modes */}
+        {(isHovered || isRoadHovered) && !isSelected && !isBypassCandidate && (
           <path
             d={d}
-            fill={isSelected ? '#facc15' : isRoadSelected ? '#60a5fa' : '#fff'}
-            opacity={isSelected ? 0.28 : isRoadSelected ? 0.12 : 0.15}
+            fill="#ffffff"
+            opacity={isHovered ? 0.22 : 0.08}
+            pointerEvents="none"
+          />
+        )}
+        {/* Selection/Road-selected overlay — suppressed on hovered lanes so white hover wins */}
+        {isRendered && (isSelected || (isRoadSelected && !isHovered)) && (
+          <path
+            d={d}
+            fill={isSelected ? '#facc15' : '#60a5fa'}
+            opacity={isSelected ? 0.28 : 0.12}
             pointerEvents="none"
           />
         )}
         
-        {/* Yield Triangle Marking */}
-        {isRendered && !enhancedMarkings && seg.kind === 'entry-fillet' && (
-          <g>
-            {(() => {
-              const arc = seg.geom as Arc;
-              // The yield line is at the end of the entry line, which is the start of the entry fillet arc?
-              // Wait, the vehicle travels along the line, then along the fillet to the ring.
-              // So the start of the fillet is where it leaves the lane.
-              // We want the yield line where it enters the ring, which is the END of the fillet arc.
-              // But actually, usually you yield BEFORE entering the roundabout ring, so somewhere near the end of the fillet.
-              // Let's place it at the end of the fillet arc.
-              const angle = arc.a1;
-              const p = arcPoint(arc, angle);
-              const tan = arcTangent(arc, angle);
-              const forward = norm(tan);
-              const right = perpLeft(forward); // perpLeft of forward is left. So -perpLeft is right.
-              // Wait, perpLeft(x,y) = (-y, x). So if forward is (1,0), left is (0,1). Right is (0,-1).
-              // Yield triangle pointing backward
-              const back = scale(forward, -1);
-              
-              const size = 6;
-              const p1 = add(p, scale(forward, size));
-              const p2 = add(p, add(scale(back, size), scale(right, size)));
-              const p3 = add(p, sub(scale(back, size), scale(right, size)));
-              
-              return (
-                <polygon
-                  points={`${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}`}
-                  fill="#fff"
-                  pointerEvents="none"
-                />
-              );
-            })()}
-          </g>
-        )}
       </g>
     );
   };
@@ -266,6 +234,11 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
 
   return (
     <g transform={`translate(${island.center.x || 0}, ${island.center.y || 0})`}>
+      <defs>
+        <filter id="lane-shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx={0} dy={1.5 * zoom} stdDeviation={1.5 * zoom} floodColor="#000" floodOpacity={0.35} />
+        </filter>
+      </defs>
       <circle 
         cx={0} 
         cy={0} 

@@ -29,6 +29,7 @@ export const TangentHandle: React.FC<Props> = ({ anchor, offset, zoom, onDrag })
         y={position.y}
         zoom={zoom}
         radius={4}
+        shape="square"
         fill="#dbeafe"
         stroke="#2563eb"
         cursor="crosshair"

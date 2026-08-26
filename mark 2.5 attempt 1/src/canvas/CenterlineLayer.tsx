@@ -12,6 +12,10 @@ type CenterlineProps = {
   selected: boolean;
   relatedSelected: boolean;
   anySelection: boolean;
+  passedThrough: boolean;
+  hovered: boolean;
+  guideLightness: number;
+  guideShadowStrength: number;
 };
 
 function makeSpline(arm: ArmConfig): CatmullRomSpline {
@@ -35,7 +39,7 @@ function projectOntoSpline(spline: CatmullRomSpline, point: Vec2) {
   return best.t;
 }
 
-const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, relatedSelected, anySelection }) => {
+const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, relatedSelected, anySelection, passedThrough, hovered, guideLightness, guideShadowStrength }) => {
   const committedConfig = useEditorStore(state => state.committedConfig);
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const commitDraft = useEditorStore(state => state.commitDraft);
@@ -47,7 +51,7 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
   const d = splineToSvgPath(spline);
 
   const handlePointerDown = (event: React.PointerEvent<SVGPathElement>) => {
-    if (!selected || arm.nodes.length < 2) return;
+    if (!selected || passedThrough || arm.nodes.length < 2) return;
     event.stopPropagation();
     const svg = event.currentTarget.closest('svg');
     if (!svg) return;
@@ -84,7 +88,9 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
     event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
-  const showSpline = !anySelection || selected || relatedSelected;
+  const showSpline = !anySelection || selected || relatedSelected || hovered;
+  const guideColor = `hsl(221, 83%, ${guideLightness}%)`;
+  const isHoverOnly = hovered && !selected && !relatedSelected;
 
   return (
     <g>
@@ -92,9 +98,11 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
         <path
           d={d}
           fill="none"
-          stroke={selected ? '#2563eb' : 'rgba(37, 99, 235, 0.42)'}
-          strokeWidth={(selected ? 2 : 1.25) * zoom}
-          strokeDasharray={selected ? undefined : `${5 * zoom} ${5 * zoom}`}
+          stroke={selected ? '#2563eb' : hovered ? '#3b82f6' : guideColor}
+          strokeWidth={(selected ? 2 : hovered ? 1.75 : 1.25) * zoom}
+          strokeDasharray={selected ? undefined : hovered ? `${8 * zoom} ${4 * zoom}` : `${5 * zoom} ${5 * zoom}`}
+          opacity={isHoverOnly ? 0.85 : undefined}
+          filter={guideShadowStrength > 0 ? `url(#road-guide-shadow)` : undefined}
           pointerEvents="none"
         />
       )}
@@ -105,8 +113,8 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
         strokeWidth={14 * zoom}
         pointerEvents="stroke"
         cursor={selected ? 'copy' : 'pointer'}
-        data-target={selected ? undefined : JSON.stringify({ kind: 'arm', armId: arm.id })}
-        data-handle={selected ? 'true' : undefined}
+        data-target={selected && !passedThrough ? undefined : JSON.stringify({ kind: 'arm', armId: arm.id })}
+        data-handle={selected && !passedThrough ? 'true' : undefined}
         data-tooltip={selected ? 'Click to add a road point, or drag immediately to place it.' : `Select road ${arm.id}.`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -124,11 +132,34 @@ type Props = {
 
 export const CenterlineLayer: React.FC<Props> = ({ config, zoom }) => {
   const selection = useEditorStore(state => state.selection);
+  const hovered = useEditorStore(state => state.hovered);
   const viewMode = useEditorStore(state => state.viewMode);
+  const passThroughStack = useEditorStore(state => state.passThroughStack);
+  const guideLightness = useEditorStore(state => state.settings.roadGuideLightness);
+  const guideShadowStrength = useEditorStore(state => state.settings.roadGuideShadowStrength);
+  const guideShadowBlur = useEditorStore(state => state.settings.roadGuideShadowBlur);
+  const guideShadowOffsetY = useEditorStore(state => state.settings.roadGuideShadowOffsetY);
   if (viewMode === 'rendered') return null;
   const anySelection = selection !== null;
+  const guidePoints = config.arms.flatMap(arm => arm.nodes.flatMap(node => [
+    node.point,
+    node.tangentIn ? { x: node.point.x + node.tangentIn.x, y: node.point.y + node.tangentIn.y } : node.point,
+    node.tangentOut ? { x: node.point.x + node.tangentOut.x, y: node.point.y + node.tangentOut.y } : node.point
+  ]));
+  const shadowMargin = (guideShadowBlur * guideShadowStrength * 4 + Math.abs(guideShadowOffsetY) + 4) * zoom;
+  const guideXs = guidePoints.length ? guidePoints.map(point => point.x) : [0];
+  const guideYs = guidePoints.length ? guidePoints.map(point => point.y) : [0];
+  const minX = Math.min(...guideXs) - shadowMargin;
+  const minY = Math.min(...guideYs) - shadowMargin;
+  const maxX = Math.max(...guideXs) + shadowMargin;
+  const maxY = Math.max(...guideYs) + shadowMargin;
   return (
     <g>
+      <defs>
+        <filter id="road-guide-shadow" filterUnits="userSpaceOnUse" x={minX} y={minY} width={maxX - minX} height={maxY - minY}>
+          <feDropShadow dx={0} dy={guideShadowOffsetY * zoom} stdDeviation={guideShadowBlur * zoom * guideShadowStrength} floodColor="#000" floodOpacity={guideShadowStrength} />
+        </filter>
+      </defs>
       {config.arms.map(arm => (
         <ArmCenterline
           key={arm.id}
@@ -137,6 +168,10 @@ export const CenterlineLayer: React.FC<Props> = ({ config, zoom }) => {
           selected={selection?.kind === 'arm' && selection.armId === arm.id}
           relatedSelected={selection?.kind === 'lane' && selection.armId === arm.id}
           anySelection={anySelection}
+          passedThrough={passThroughStack.includes(JSON.stringify({ kind: 'arm', armId: arm.id }))}
+          hovered={hovered?.kind === 'arm' && hovered.armId === arm.id}
+          guideLightness={guideLightness}
+          guideShadowStrength={guideShadowStrength}
         />
       ))}
     </g>
