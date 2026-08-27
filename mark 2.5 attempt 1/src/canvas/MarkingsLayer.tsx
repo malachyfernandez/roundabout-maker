@@ -17,7 +17,8 @@ function pathData(points: { x: number; y: number }[], close = false) {
 export const MarkingsLayer: React.FC<Props> = React.memo(({ config, segments }) => {
   const collisionBuffer = useEditorStore(state => state.settings.ringLaneCollisionBuffer);
   const widthScale = useEditorStore(state => state.settings.roadMarkingWidthScale);
-  const markings = React.useMemo(() => buildMarkings(config, segments, { ringLaneCollisionBuffer: collisionBuffer }), [collisionBuffer, config, segments]);
+  const yieldSetback = useEditorStore(state => state.settings.yieldSetback);
+  const markings = React.useMemo(() => buildMarkings(config, segments, { ringLaneCollisionBuffer: collisionBuffer, yieldSetback }), [collisionBuffer, config, segments, yieldSetback]);
   return (
     <g transform={`translate(${config.island.center.x || 0}, ${config.island.center.y || 0})`} pointerEvents="none" data-markings-layer="semantic">
       {markings.map(marking => marking.kind === 'fill' ? (

@@ -15,6 +15,7 @@ export type ResolvedSegment = {
   widths?: number[];
   radiusCenterRate?: Vec2;
   endpoint?: 'start' | 'end';
+  ringId?: string;
   source: SelectionTarget;
 };
 
@@ -106,7 +107,7 @@ export function solveGeometry(
     return leg.widths[0] ?? 10;
   };
 
-  const pushEntry = (routeId: string, leg: EntryLeg, ringWidth: number, segIndex: number) => {
+  const pushEntry = (routeId: string, leg: EntryLeg, ringWidth: number, segIndex: number, ringId: string) => {
     // Trim the polyline at the fillet tangent point so the road stops where the turn begins.
     const atFillet = trimPolylineAtFillet(leg.points, leg.widths, leg.fillet.tangentPointLine);
     const trimmed = trimInvisibleLaneEnds(atFillet.points, atFillet.widths);
@@ -120,11 +121,11 @@ export function solveGeometry(
     });
     resolved.push({
       routeId, segIndex: segIndex + 1, kind: 'entry-fillet', geom: leg.fillet.arc,
-      color: generateHue(colorIdx++, totalSegs), wStart: width, wEnd: ringWidth, endpoint: leg.endpoint, source
+      color: generateHue(colorIdx++, totalSegs), wStart: width, wEnd: ringWidth, endpoint: leg.endpoint, ringId, source
     });
   };
 
-  const pushExit = (routeId: string, leg: ExitLeg, ringWidth: number, segIndex: number) => {
+  const pushExit = (routeId: string, leg: ExitLeg, ringWidth: number, segIndex: number, ringId: string) => {
     // Trim the polyline at the fillet tangent point so the road starts where the turn ends.
     const atFillet = trimPolylineAtFillet(leg.points, leg.widths, leg.fillet.tangentPointLine);
     const trimmed = trimInvisibleLaneEnds(atFillet.points, atFillet.widths);
@@ -134,7 +135,7 @@ export function solveGeometry(
 
     resolved.push({
       routeId, segIndex, kind: 'exit-fillet', geom: leg.fillet.arc,
-      color: generateHue(colorIdx++, totalSegs), wStart: ringWidth, wEnd: width, endpoint: leg.endpoint, source
+      color: generateHue(colorIdx++, totalSegs), wStart: ringWidth, wEnd: width, endpoint: leg.endpoint, ringId, source
     });
     resolved.push({
       routeId, segIndex: segIndex + 1, kind: 'exit-line', geom: exitLineGeom,
@@ -206,7 +207,7 @@ export function solveGeometry(
       }
       case 'through': {
         const ringConfig = config.rings.find((r) => r.id === route.ringId)!;
-        pushEntry(route.id, route.entry, ringConfig.width, 0);
+        pushEntry(route.id, route.entry, ringConfig.width, 0, route.ringId);
 
         let { a0, a1, dir } = route.ringSpan;
         a0 = normalizeAngle(a0);
@@ -225,20 +226,21 @@ export function solveGeometry(
           routeId: route.id, segIndex: 2, kind: 'ring-arc', geom: ringArcGeom,
           color: generateHue(colorIdx++, totalSegs),
           wStart: ringConfig.width, wEnd: ringConfig.width,
+          ringId: route.ringId,
           source: { kind: 'ring', ringId: route.ringId }
         });
 
-        pushExit(route.id, route.exit, ringConfig.width, 3);
+        pushExit(route.id, route.exit, ringConfig.width, 3, route.ringId);
         break;
       }
       case 'standalone-entry': {
         const ringConfig = config.rings.find((r) => r.id === route.ringId)!;
-        pushEntry(route.id, route.entry, ringConfig.width, 0);
+        pushEntry(route.id, route.entry, ringConfig.width, 0, route.ringId);
         break;
       }
       case 'standalone-exit': {
         const ringConfig = config.rings.find((r) => r.id === route.ringId)!;
-        pushExit(route.id, route.exit, ringConfig.width, 0);
+        pushExit(route.id, route.exit, ringConfig.width, 0, route.ringId);
         break;
       }
       case 'full-ring': {
@@ -250,6 +252,7 @@ export function solveGeometry(
           routeId: route.id, segIndex: 0, kind: 'ring-arc', geom: ringArcGeom,
           color: generateHue(colorIdx++, totalSegs),
           wStart: ringConfig.width, wEnd: ringConfig.width,
+          ringId: route.ringId,
           source: { kind: 'ring', ringId: route.ringId }
         });
         break;

@@ -20,6 +20,7 @@ export type Settings = {
   roadGuideShadowOffsetY: number;
   ringLaneCollisionBuffer: number;
   roadMarkingWidthScale: number;
+  yieldSetback: number;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -32,6 +33,7 @@ export const DEFAULT_SETTINGS: Settings = {
   roadGuideShadowOffsetY: 0,
   ringLaneCollisionBuffer: 0,
   roadMarkingWidthScale: 1,
+  yieldSetback: 6,
 };
 
 export type Toast = {

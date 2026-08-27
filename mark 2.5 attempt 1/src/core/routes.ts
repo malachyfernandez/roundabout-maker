@@ -135,7 +135,11 @@ function solveFilletAlongPath(
       if (!fillet) continue;
       const edge = sub(b, a);
       const edgeLengthSquared = dot(edge, edge);
-      const t = Math.max(0, Math.min(1, dot(sub(fillet.tangentPointLine, a), edge) / edgeLengthSquared));
+      const t = dot(sub(fillet.tangentPointLine, a), edge) / edgeLengthSquared;
+      if (t < -1e-6 || t > 1 + 1e-6) continue;
+      let remainingLength = len(sub(b, fillet.tangentPointLine));
+      for (let next = i + 1; next < points.length - 1; next++) remainingLength += len(sub(points[next + 1], points[next]));
+      if (remainingLength < .5) continue;
       const projected = { x: a.x + edge.x * t, y: a.y + edge.y * t };
       const distance = len(sub(fillet.tangentPointLine, projected));
       if (!best || distance < best.distance) best = { line, fillet, distance };

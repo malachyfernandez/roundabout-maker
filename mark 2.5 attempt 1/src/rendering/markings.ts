@@ -119,6 +119,80 @@ function yieldTeeth(point: Vec2, travel: Vec2, laneWidth: number, id: string): F
   });
 }
 
+type PathSample = { point: Vec2; width: number };
+
+function ringClearance(sample: PathSample, rings: RoundaboutConfig['rings']) {
+  return rings.reduce((clearance, ring) => {
+    const distance = len(sub(sample.point, ring.center));
+    const halfWidth = sample.width / 2;
+    const innerRadius = Math.max(0, ring.radius - ring.width / 2);
+    const outerRadius = ring.radius + ring.width / 2;
+    return Math.min(clearance, Math.max(distance - halfWidth - outerRadius, innerRadius - distance - halfWidth));
+  }, Infinity);
+}
+
+function yieldPoint(config: RoundaboutConfig, line: ResolvedSegment | undefined, fillet: ResolvedSegment, setback: number) {
+  const linePoints = line ? segmentPoints(line) : [];
+  const lineSamples = linePoints.map((point, index) => ({ point, width: line ? widthAt(line, index, linePoints.length) : fillet.wStart })).reverse();
+  const filletPoints = segmentPoints(fillet);
+  const filletSamples = filletPoints.map((point, index) => ({ point, width: widthAt(fillet, index, filletPoints.length) }));
+  if (lineSamples.length > 0 && filletSamples.length > 0 && len(sub(lineSamples.at(-1)!.point, filletSamples[0].point)) < 1e-5) filletSamples.shift();
+  const samples = [...lineSamples, ...filletSamples];
+  if (samples.length < 2 || ringClearance(samples[0], config.rings) <= 0) return null;
+  let intersectionIndex = -1;
+  for (let index = 1; index < samples.length; index++) {
+    if (ringClearance(samples[index], config.rings) <= 0) {
+      intersectionIndex = index;
+      break;
+    }
+  }
+  if (intersectionIndex < 1) return null;
+  const before = samples[intersectionIndex - 1];
+  const after = samples[intersectionIndex];
+  let low = 0;
+  let high = 1;
+  for (let iteration = 0; iteration < 16; iteration++) {
+    const t = (low + high) / 2;
+    const sample = {
+      point: add(before.point, scale(sub(after.point, before.point), t)),
+      width: before.width + (after.width - before.width) * t
+    };
+    if (ringClearance(sample, config.rings) <= 0) high = t;
+    else low = t;
+  }
+  const intersection = {
+    point: add(before.point, scale(sub(after.point, before.point), high)),
+    width: before.width + (after.width - before.width) * high
+  };
+  const approach = [...samples.slice(0, intersectionIndex), intersection];
+  let remaining = setback;
+  for (let index = approach.length - 1; index > 0; index--) {
+    const edge = sub(approach[index].point, approach[index - 1].point);
+    const edgeLength = len(edge);
+    if (edgeLength >= remaining) {
+      const t = edgeLength > 1e-9 ? remaining / edgeLength : 0;
+      return {
+        point: add(approach[index].point, scale(edge, -t)),
+        travel: norm(edge),
+        width: approach[index].width + (approach[index - 1].width - approach[index].width) * t
+      };
+    }
+    remaining -= edgeLength;
+  }
+  return null;
+}
+
+function buildYieldMarkings(config: RoundaboutConfig, segments: ResolvedSegment[], setback: number) {
+  const markings: FillMarking[] = [];
+  for (const fillet of segments.filter(segment => segment.kind === 'entry-fillet' && segment.geom.kind === 'arc')) {
+    const line = segments.find(segment => segment.routeId === fillet.routeId && segment.kind === 'entry-line' && segment.source.kind === 'lane'
+      && fillet.source.kind === 'lane' && segment.source.armId === fillet.source.armId && segment.source.dir === fillet.source.dir && segment.source.laneIndex === fillet.source.laneIndex);
+    const placement = yieldPoint(config, line, fillet, setback);
+    if (placement) markings.push(...yieldTeeth(placement.point, placement.travel, placement.width, `${fillet.routeId}_${fillet.segIndex}`));
+  }
+  return markings;
+}
+
 function pointInsideSegment(point: Vec2, segment: ResolvedSegment, collisionBuffer: number) {
   const points = segmentPoints(segment);
   for (let index = 0; index < points.length - 1; index++) {
@@ -151,7 +225,9 @@ function pushPointRuns(markings: Marking[], values: ({ point: Vec2; status: 'sol
   flush();
 }
 
-type RingSegment = ResolvedSegment & { geom: Arc; source: { kind: 'ring'; ringId: string } };
+type ArcPavementSegment = ResolvedSegment & { geom: Arc };
+
+type RingSegment = ArcPavementSegment & { source: { kind: 'ring'; ringId: string } };
 
 type RadialInterval = { start: number; end: number };
 
@@ -165,7 +241,7 @@ function rayCircleRoots(origin: Vec2, direction: Vec2, center: Vec2, radius: num
   return [(-b - root) / 2, (-b + root) / 2].filter(value => value >= 0);
 }
 
-function radialIntervals(origin: Vec2, direction: Vec2, segment: RingSegment): RadialInterval[] {
+function radialIntervals(origin: Vec2, direction: Vec2, segment: ArcPavementSegment): RadialInterval[] {
   const innerRadius = Math.max(.01, segment.geom.r - segment.wStart / 2);
   const outerRadius = segment.geom.r + segment.wStart / 2;
   const roots = [0, ...rayCircleRoots(origin, direction, segment.geom.c, innerRadius), ...rayCircleRoots(origin, direction, segment.geom.c, outerRadius)].sort((a, b) => a - b);
@@ -230,11 +306,15 @@ function buildRingEnvelopeMarkings(segments: ResolvedSegment[], collisionBuffer:
   }
   ringComponents(ringSegments).forEach((component, componentIndex) => {
     const representatives = [...new Map(component.map(segment => [segment.source.ringId, segment])).values()];
+    const ringIds = new Set(representatives.map(segment => segment.source.ringId));
+    const pavement = segments.filter((segment): segment is ArcPavementSegment => segment.geom.kind === 'arc'
+      && (segment.kind === 'ring-arc' || segment.kind === 'entry-fillet' || segment.kind === 'exit-fillet')
+      && ((segment.source.kind === 'ring' && ringIds.has(segment.source.ringId)) || Boolean(segment.ringId && ringIds.has(segment.ringId))));
     const center = scale(representatives.reduce((sum, segment) => add(sum, segment.geom.c), { x: 0, y: 0 }), 1 / representatives.length);
     const values = Array.from({ length: 361 }, (_, index) => {
       const angle = index / 360 * Math.PI * 2;
       const direction = { x: Math.cos(angle), y: Math.sin(angle) };
-      const intervals = component.flatMap(segment => radialIntervals(center, direction, segment)).filter(interval => interval.end > 1e-5);
+      const intervals = pavement.flatMap(segment => radialIntervals(center, direction, segment)).filter(interval => interval.end > 1e-5);
       if (intervals.length === 0) return null;
       const nearest = intervals.reduce((best, interval) => interval.start < best.start ? interval : best);
       if (nearest.start <= 1e-5) return null;
@@ -251,6 +331,7 @@ function buildRingEnvelopeMarkings(segments: ResolvedSegment[], collisionBuffer:
 
 export type MarkingOptions = {
   ringLaneCollisionBuffer?: number;
+  yieldSetback?: number;
 };
 
 export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegment[], options: MarkingOptions = {}): Marking[] {
@@ -289,11 +370,6 @@ export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegmen
         const travel = entry ? scale(arrow.tangent, -1) : arrow.tangent;
         markings.push({ kind: 'fill', id: `${segment.routeId}_${segment.segIndex}_arrow`, rule: MARKING_RULES[6], points: arrowShape(arrow.point, travel), color: '#f8fafc', priority: 35 });
       }
-    } else if (segment.kind === 'entry-fillet' && segment.geom.kind === 'arc') {
-      const arc = segment.geom as Arc;
-      const setbackAngle = Math.min((segment.wEnd / 2 + 1.5) / Math.max(arc.r, 1), Math.abs(arc.a1 - arc.a0) * .45);
-      const angle = arc.a1 - arc.dir * setbackAngle;
-      markings.push(...yieldTeeth(arcPoint(arc, angle), arcTangent(arc, angle), segment.wStart, `${segment.routeId}_${segment.segIndex}`));
     } else if (segment.kind === 'bypass-entry-connector' || segment.kind === 'bypass-lane' || segment.kind === 'bypass-exit-connector') {
       markings.push({ kind: 'stroke', id: `${segment.routeId}_${segment.segIndex}_left`, rule: MARKING_RULES[2], points: offsetEdge(segment, -.5), color: '#f8fafc', width: .7, priority: 24 });
       markings.push({ kind: 'stroke', id: `${segment.routeId}_${segment.segIndex}_right`, rule: MARKING_RULES[2], points: offsetEdge(segment, .5), color: '#f8fafc', width: .7, priority: 24 });
@@ -337,6 +413,8 @@ export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegmen
       });
     }
   }
+
+  markings.push(...buildYieldMarkings(config, segments, options.yieldSetback ?? 6));
 
   return markings.sort((a, b) => a.priority - b.priority);
 }

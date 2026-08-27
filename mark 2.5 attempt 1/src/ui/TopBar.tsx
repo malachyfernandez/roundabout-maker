@@ -164,6 +164,23 @@ export const TopBar: React.FC = () => {
               </label>
               <label className="settings-row">
                 <div className="settings-label">
+                  <strong>Yield setback</strong>
+                  <small>Distance before the first ring-pavement intersection</small>
+                </div>
+                <div className="settings-control">
+                  <input
+                    type="range"
+                    min="0"
+                    max="30"
+                    step="0.5"
+                    value={settings.yieldSetback}
+                    onChange={e => setSettings({ yieldSetback: Number(e.target.value) })}
+                  />
+                  <span className="settings-value">{settings.yieldSetback.toFixed(1)} ft</span>
+                </div>
+              </label>
+              <label className="settings-row">
+                <div className="settings-label">
                   <strong>Road marking width</strong>
                   <small>Scale the physical width of every painted line</small>
                 </div>

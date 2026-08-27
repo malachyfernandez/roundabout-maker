@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { type RoundaboutConfig } from '../config/types';
+import { DEFAULT_CONFIG } from './config';
 import { compileRoutes, laneRoleAtEndpoint, resolveLaneRing } from './routes';
 import { solveGeometry } from './solver';
 import { dragLaneFilletRadius } from '../editor/constraints/laneBypass';
+import { segmentPoints } from '../rendering/markings';
 
 const config: RoundaboutConfig = {
   island: { center: { x: 0, y: 0 }, radius: 15 },
@@ -52,6 +54,29 @@ describe('road endpoint ring attachments', () => {
     expect(has('in', 'end', 'exit-fillet')).toBe(true);
     expect(has('out', 'start', 'exit-fillet')).toBe(true);
     expect(has('out', 'end', 'entry-fillet')).toBe(true);
+  });
+
+  it('never leaves connected lanes without pavement when a multi-lane road is shortened', () => {
+    for (const length of [35, 45, 55, 70, 90]) {
+      const shortened = structuredClone(DEFAULT_CONFIG);
+      shortened.arms = [shortened.arms.find(arm => arm.id === 'north')!];
+      shortened.arms[0].nodes[1].point = { x: 0, y: -length };
+      const segments = solveGeometry(shortened, compileRoutes(shortened, { profileEnabled: true }));
+      for (const dir of ['in', 'out'] as const) {
+        for (let laneIndex = 0; laneIndex < 2; laneIndex++) {
+          const lines = segments.filter(segment => segment.source.kind === 'lane'
+            && segment.source.armId === 'north'
+            && segment.source.dir === dir
+            && segment.source.laneIndex === laneIndex
+            && (segment.kind === 'entry-line' || segment.kind === 'exit-line'));
+          expect(lines.length).toBeGreaterThan(0);
+          expect(lines.some(segment => {
+            const points = segmentPoints(segment);
+            return points.length >= 2 && points.some((point, index) => index > 0 && Math.hypot(point.x - points[index - 1].x, point.y - points[index - 1].y) > .1);
+          })).toBe(true);
+        }
+      }
+    }
   });
 
   it('edits connector radii independently at the source and target rings', () => {
