@@ -1,4 +1,5 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
+import { matchesShortcut, shortcutLabel, type KeyboardShortcut } from './keyboard';
 
 type Props = {
   /** Unique key for persisting the drag offset in localStorage. */
@@ -23,7 +24,8 @@ type Props = {
   /** Optional icon element rendered before the label. */
   icon?: React.ReactNode;
   /** Click handler (only fires if the button wasn't dragged). */
-  onClick?: () => void;
+  onClick: () => void;
+  shortcut: KeyboardShortcut;
   /** Whether the button is disabled. */
   disabled?: boolean;
   /** When defined, renders a checkbox indicator instead of an icon. */
@@ -45,6 +47,7 @@ export const FloatingButton: React.FC<Props> = ({
   tooltip,
   icon,
   onClick,
+  shortcut,
   disabled = false,
   checked,
   className = '',
@@ -101,8 +104,18 @@ export const FloatingButton: React.FC<Props> = ({
 
   const handleClick = useCallback(() => {
     if (didDrag) return;
-    onClick?.();
+    onClick();
   }, [didDrag, onClick]);
+
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (disabled || !matchesShortcut(event, shortcut)) return;
+      event.preventDefault();
+      onClick();
+    };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [disabled, onClick, shortcut]);
 
   // Compute screen position from anchor + offset
   let screenX = anchorPoint.x + offset.x;
@@ -120,6 +133,7 @@ export const FloatingButton: React.FC<Props> = ({
       className={`floating-button ${isDragging ? 'dragging' : ''} ${disabled ? 'disabled' : ''} ${className}`}
       style={{ left: screenX, top: screenY }}
       data-tooltip={tooltip}
+      aria-keyshortcuts={shortcutLabel(shortcut)}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -138,6 +152,7 @@ export const FloatingButton: React.FC<Props> = ({
         icon && <span className="floating-button-icon">{icon}</span>
       )}
       <span className="floating-button-label">{label}</span>
+      <kbd className="floating-button-shortcut">{shortcutLabel(shortcut)}</kbd>
       <span className="floating-button-grip">
         <svg viewBox="0 0 4 12" width="4" height="12" aria-hidden="true">
           <circle cx="1" cy="2" r="1" fill="currentColor" />

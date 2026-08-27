@@ -70,6 +70,15 @@ export const TopBar: React.FC = () => {
               </label>
               <label className="settings-row">
                 <div className="settings-label">
+                  <strong>Smart zoom</strong>
+                  <small>Keep selected controls and drag targets in view</small>
+                </div>
+                <div className="settings-control">
+                  <input type="checkbox" checked={settings.smartZoom} onChange={e => setSettings({ smartZoom: e.target.checked })} />
+                </div>
+              </label>
+              <label className="settings-row">
+                <div className="settings-label">
                   <strong>Road guide lightness</strong>
                   <small>How light the road guide lines appear</small>
                 </div>

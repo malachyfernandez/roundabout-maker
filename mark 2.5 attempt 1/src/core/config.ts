@@ -17,12 +17,12 @@ export function validateConfig(config: RoundaboutConfig): string[] {
     }
     
     for (const lane of arm.lanesIn) {
-      if (!ringIds.has(lane.targetsRing)) {
+      if (lane.targetsRing && !ringIds.has(lane.targetsRing)) {
         errors.push(`Arm ${arm.id} laneIn targets unknown ring ${lane.targetsRing}`);
       }
     }
     for (const lane of arm.lanesOut) {
-      if (!ringIds.has(lane.sourceRing)) {
+      if (lane.sourceRing && !ringIds.has(lane.sourceRing)) {
         errors.push(`Arm ${arm.id} laneOut sources unknown ring ${lane.sourceRing}`);
       }
     }

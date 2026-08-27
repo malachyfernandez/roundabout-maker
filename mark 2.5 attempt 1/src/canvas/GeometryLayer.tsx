@@ -3,7 +3,7 @@ import { type Vec2, add, sub, scale, norm, perpLeft } from '../math/vector';
 import { type ResolvedSegment } from '../core/solver';
 import { type Polyline, type Arc, type Line, arcPoint, linePoint, arcTangent } from '../geometry/primitives';
 import { useEditorStore } from '../editor/editorStore';
-import { isRightTurnPair } from '../core/bypass';
+import { isRightTurnPair, isValidBypassLanePair } from '../core/bypass';
 
 function generateVariableWidthPath(seg: ResolvedSegment): string {
   const pts: { p: Vec2, normal: Vec2 }[] = [];
@@ -29,6 +29,7 @@ function generateVariableWidthPath(seg: ResolvedSegment): string {
     }
   } else if (seg.geom.kind === 'polyline') {
     const poly = seg.geom as Polyline;
+    if (poly.points.length < 2) return "";
     // For a polyline, compute normals at each point using central difference
     for (let i = 0; i < poly.points.length; i++) {
       const p = poly.points[i];
@@ -85,11 +86,13 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
   const viewMode = useEditorStore(state => state.viewMode);
   const activeTool = useEditorStore(state => state.activeTool);
   const pendingBypassSource = useEditorStore(state => state.pendingBypassSource);
+  const drag = useEditorStore(state => state.drag);
 
   const matches = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
 
   const renderSegment = (seg: ResolvedSegment) => {
     const d = generateVariableWidthPath(seg);
+    if (!d) return null;
     let dCenter = "";
     if (seg.geom.kind === "line") {
       const line = seg.geom as Line;
@@ -132,7 +135,7 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
         && selection.armId === seg.source.armId
         && selection.dir === seg.source.dir
         && selection.laneIndex === seg.source.laneIndex;
-      isRoadSelected = (selection?.kind === 'lane' || selection?.kind === 'arm') && selection.armId === seg.source.armId;
+      isRoadSelected = (selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'profile-point') && selection.armId === seg.source.armId;
       isHovered = hovered?.kind === 'lane'
         && hovered.armId === seg.source.armId
         && hovered.dir === seg.source.dir
@@ -142,16 +145,34 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
       isSelected = selection?.kind === 'ring' && selection.ringId === seg.source.ringId;
       isHovered = hovered?.kind === 'ring' && hovered.ringId === seg.source.ringId;
     }
+    const bypass = seg.routeId.startsWith('bypass_')
+      ? config.bypasses?.find(candidate => `bypass_${candidate.id}` === seg.routeId)
+      : null;
+    const bypassSelected = bypass && selection?.kind === 'lane' && (
+      selection.dir === 'in'
+        ? bypass.fromArmId === selection.armId && bypass.fromLaneIndex === selection.laneIndex
+        : bypass.toArmId === selection.armId && bypass.toLaneIndex === selection.laneIndex
+    );
+    if (bypassSelected && (seg.kind === 'bypass-entry-connector' || seg.kind === 'bypass-lane' || seg.kind === 'bypass-exit-connector')) isSelected = true;
 
     const isRendered = viewMode !== 'segment';
     const laneSource = seg.source.kind === 'lane' ? seg.source : null;
-    const isBypassCandidate = activeTool === 'connect-bypass'
+    const isLaneConnectionSegment = laneSource?.dir === 'in'
+      ? seg.kind === 'entry-line' || seg.kind === 'bypass-entry'
+      : laneSource?.dir === 'out' && (seg.kind === 'exit-line' || seg.kind === 'bypass-exit');
+    const isToolBypassCandidate = isLaneConnectionSegment
+      && activeTool === 'connect-bypass'
       && pendingBypassSource
       && laneSource?.dir === 'out'
       && isRightTurnPair(
         config.arms.find(arm => arm.id === pendingBypassSource.armId),
         config.arms.find(arm => arm.id === laneSource.armId)
       );
+    const ringSnapSource = drag?.active && drag.type === 'lane-ring-snap' && selection?.kind === 'lane' ? selection : null;
+    const isDragBypassCandidate = isLaneConnectionSegment
+      && laneSource?.kind === 'lane'
+      && isValidBypassLanePair(config, ringSnapSource, laneSource);
+    const isBypassCandidate = isToolBypassCandidate || isDragBypassCandidate;
 
     let fillColor = seg.color;
     // When a lane is hovered, suppress the road-selected blue tint so the
@@ -167,7 +188,7 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
       // In rendered mode, we can show selection as a subtle overlay
     }
     const sourceTooltip = isBypassCandidate
-      ? `Connect the right-turn bypass to exit lane ${seg.source.kind === 'lane' ? seg.source.laneIndex + 1 : ''}.`
+      ? `Drop to connect the right-turn bypass to ${seg.source.kind === 'lane' && seg.source.dir === 'in' ? 'entry' : 'exit'} lane ${seg.source.kind === 'lane' ? seg.source.laneIndex + 1 : ''}.`
       : seg.source.kind === 'lane'
       ? `Select ${seg.source.dir === 'in' ? 'entry' : 'exit'} lane ${seg.source.laneIndex + 1}.`
       : seg.source.kind === 'ring'
@@ -184,17 +205,30 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
           opacity={opacity}
           filter={isRendered ? undefined : 'url(#lane-shadow)'}
           data-target={JSON.stringify(seg.source)}
+          data-bypass-candidate={isBypassCandidate ? 'true' : undefined}
           data-tooltip={sourceTooltip}
         />
         <path
           d={d}
           fill="none"
           stroke="transparent"
-          strokeWidth={12 * zoom}
+          strokeWidth={8}
+          vectorEffect="non-scaling-stroke"
           pointerEvents="stroke"
           data-target={JSON.stringify(seg.source)}
+          data-bypass-candidate={isBypassCandidate ? 'true' : undefined}
           data-tooltip={sourceTooltip}
         />
+        {isBypassCandidate && (
+          <path
+            d={d}
+            fill="#22c55e"
+            stroke="#22c55e"
+            strokeWidth={3 * zoom}
+            opacity={0.24}
+            pointerEvents="none"
+          />
+        )}
         {!isRendered && (
           <path
             d={dCenter}

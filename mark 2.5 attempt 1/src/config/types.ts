@@ -9,13 +9,13 @@ export type RingConfig = {
 
 export type LaneIn = {
   width: number;
-  targetsRing: string;
+  targetsRing?: string;
   filletRadius?: number;
 };
 
 export type LaneOut = {
   width: number;
-  sourceRing: string;
+  sourceRing?: string;
   filletRadius?: number;
   dropsRing: boolean;
 };
@@ -50,7 +50,11 @@ export type RightTurnBypass = {
   fromLaneIndex: number;
   toArmId: string;
   toLaneIndex: number;
-  radius: number;
+  entryRadius: number;
+  exitRadius: number;
+  lanePoint: Vec2;
+  laneAngle: number;
+  radius?: number;
 };
 
 export type ArmConfig = {
@@ -58,8 +62,8 @@ export type ArmConfig = {
   nodes: ArmNode[];
   profile?: RoadProfilePoint[];
   // Topology remains global to the arm
-  lanesIn: { targetsRing: string; filletRadius?: number }[];
-  lanesOut: { sourceRing: string; filletRadius?: number; dropsRing: boolean }[];
+  lanesIn: { targetsRing?: string; filletRadius?: number }[];
+  lanesOut: { sourceRing?: string; filletRadius?: number; dropsRing: boolean }[];
 };
 
 export type RoundaboutConfig = {
@@ -74,4 +78,5 @@ export type SelectionTarget =
   | { kind: "island" }
   | { kind: "ring"; ringId: string }
   | { kind: "arm"; armId: string }
-  | { kind: "lane"; armId: string; dir: "in" | "out"; laneIndex: number };
+  | { kind: "lane"; armId: string; dir: "in" | "out"; laneIndex: number }
+  | { kind: "profile-point"; armId: string; pointId: string };

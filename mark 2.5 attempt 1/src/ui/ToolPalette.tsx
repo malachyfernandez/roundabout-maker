@@ -1,6 +1,7 @@
 import React from 'react';
 import { MousePointer2, Waypoints, CircleDot } from 'lucide-react';
 import { type ActiveTool, useEditorStore } from '../editor/editorStore';
+import { matchesShortcut } from './keyboard';
 
 const TOOLS: { id: ActiveTool; label: string; key: string; tooltip: string; icon: React.ReactNode }[] = [
   { id: 'select', label: 'Select', key: 'V', tooltip: 'Select roads, lanes, rings, and gizmos. Drag empty space to pan.', icon: <MousePointer2 size={21} /> },
@@ -16,10 +17,14 @@ export const ToolPalette: React.FC = () => {
 
   React.useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
-      const tool = TOOLS.find(item => item.key.toLowerCase() === event.key.toLowerCase());
-      if (tool) setActiveTool(tool.id);
-      if (event.key === 'Escape') setActiveTool('select');
+      const tool = TOOLS.find(item => matchesShortcut(event, { key: item.key }));
+      if (tool) {
+        event.preventDefault();
+        setActiveTool(tool.id);
+      } else if (matchesShortcut(event, { key: 'Escape' })) {
+        event.preventDefault();
+        setActiveTool('select');
+      }
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);

@@ -110,7 +110,8 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
         d={d}
         fill="none"
         stroke="transparent"
-        strokeWidth={14 * zoom}
+        strokeWidth={10}
+        vectorEffect="non-scaling-stroke"
         pointerEvents="stroke"
         cursor={selected ? 'copy' : 'pointer'}
         data-target={selected && !passedThrough ? undefined : JSON.stringify({ kind: 'arm', armId: arm.id })}
@@ -166,7 +167,7 @@ export const CenterlineLayer: React.FC<Props> = ({ config, zoom }) => {
           arm={arm}
           zoom={zoom}
           selected={selection?.kind === 'arm' && selection.armId === arm.id}
-          relatedSelected={selection?.kind === 'lane' && selection.armId === arm.id}
+          relatedSelected={(selection?.kind === 'lane' || selection?.kind === 'profile-point') && selection.armId === arm.id}
           anySelection={anySelection}
           passedThrough={passThroughStack.includes(JSON.stringify({ kind: 'arm', armId: arm.id }))}
           hovered={hovered?.kind === 'arm' && hovered.armId === arm.id}

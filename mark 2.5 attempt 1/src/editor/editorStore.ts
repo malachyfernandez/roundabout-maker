@@ -13,6 +13,7 @@ export type ActiveTool = 'select' | 'add-road' | 'add-ring' | 'connect-bypass';
 export type Settings = {
   zoomSensitivity: number;
   panSensitivity: number;
+  smartZoom: boolean;
   roadGuideLightness: number;
   roadGuideShadowStrength: number;
   roadGuideShadowBlur: number;
@@ -22,6 +23,7 @@ export type Settings = {
 export const DEFAULT_SETTINGS: Settings = {
   zoomSensitivity: 0.83,
   panSensitivity: 1.0,
+  smartZoom: true,
   roadGuideLightness: 72,
   roadGuideShadowStrength: 0.7,
   roadGuideShadowBlur: 2,

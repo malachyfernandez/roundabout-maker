@@ -282,12 +282,14 @@ export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegmen
       const setbackAngle = Math.min((segment.wEnd / 2 + 1.5) / Math.max(arc.r, 1), Math.abs(arc.a1 - arc.a0) * .45);
       const angle = arc.a1 - arc.dir * setbackAngle;
       markings.push(...yieldTeeth(arcPoint(arc, angle), arcTangent(arc, angle), segment.wStart, `${segment.routeId}_${segment.segIndex}`));
-    } else if (segment.kind === 'bypass-curve') {
-      markings.push({ kind: 'stroke', id: `${segment.routeId}_curve_left`, rule: MARKING_RULES[2], points: offsetEdge(segment, -.5), color: '#f8fafc', width: .7, priority: 24 });
-      markings.push({ kind: 'stroke', id: `${segment.routeId}_curve_right`, rule: MARKING_RULES[2], points: offsetEdge(segment, .5), color: '#f8fafc', width: .7, priority: 24 });
-      const points = segmentPoints(segment);
-      const arrow = pointAtDistance(points, Math.max(6, points.reduce((sum, point, index) => index ? sum + len(sub(point, points[index - 1])) : sum, 0) / 2));
-      markings.push({ kind: 'fill', id: `${segment.routeId}_curve_arrow`, rule: MARKING_RULES[6], points: arrowShape(arrow.point, arrow.tangent, 6), color: '#f8fafc', priority: 35 });
+    } else if (segment.kind === 'bypass-entry-connector' || segment.kind === 'bypass-lane' || segment.kind === 'bypass-exit-connector') {
+      markings.push({ kind: 'stroke', id: `${segment.routeId}_${segment.segIndex}_left`, rule: MARKING_RULES[2], points: offsetEdge(segment, -.5), color: '#f8fafc', width: .7, priority: 24 });
+      markings.push({ kind: 'stroke', id: `${segment.routeId}_${segment.segIndex}_right`, rule: MARKING_RULES[2], points: offsetEdge(segment, .5), color: '#f8fafc', width: .7, priority: 24 });
+      if (segment.kind === 'bypass-lane') {
+        const points = segmentPoints(segment);
+        const arrow = pointAtDistance(points, Math.max(6, points.reduce((sum, point, index) => index ? sum + len(sub(point, points[index - 1])) : sum, 0) / 2));
+        markings.push({ kind: 'fill', id: `${segment.routeId}_lane_arrow`, rule: MARKING_RULES[6], points: arrowShape(arrow.point, arrow.tangent, 6), color: '#f8fafc', priority: 35 });
+      }
     }
   }
 

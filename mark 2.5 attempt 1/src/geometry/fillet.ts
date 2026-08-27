@@ -1,5 +1,5 @@
 import { type Line, type Arc, normalizeAngle } from './primitives';
-import { type Vec2, add, sub, scale, perpLeft, dot, len, angleOf, EPS } from '../math/vector';
+import { type Vec2, add, sub, scale, perpLeft, dot, cross, len, angleOf, EPS } from '../math/vector';
 
 export type FilletSolution = {
   tLine: number; // The t parameter on the straight line where the fillet starts/ends
@@ -163,4 +163,55 @@ function getArcTangent(a: Arc, angle: number): Vec2 {
   const s = Math.sin(angle);
   const c = Math.cos(angle);
   return { x: a.dir * -s, y: a.dir * c };
+}
+
+export type LineLineFilletSolution = {
+  tangentPointFrom: Vec2;
+  tangentPointTo: Vec2;
+  tFrom: number;
+  tTo: number;
+  centerRate: Vec2;
+  arc: Arc;
+};
+
+export function solveLineLineFillets(from: Line, to: Line, radius: number): LineLineFilletSolution[] {
+  const denominator = cross(from.u, to.u);
+  if (Math.abs(denominator) < EPS || radius < EPS) return [];
+  const intersectionT = cross(sub(to.p, from.p), to.u) / denominator;
+  const intersection = add(from.p, scale(from.u, intersectionT));
+  const solutions: LineLineFilletSolution[] = [];
+  for (const fromSide of [1, -1] as const) {
+    for (const toSide of [1, -1] as const) {
+      const fromOffset = scale(perpLeft(from.u), fromSide * radius);
+      const toOffset = scale(perpLeft(to.u), toSide * radius);
+      const offsetFromPoint = add(from.p, fromOffset);
+      const offsetToPoint = add(to.p, toOffset);
+      const tFromCenter = cross(sub(offsetToPoint, offsetFromPoint), to.u) / denominator;
+      const center = add(offsetFromPoint, scale(from.u, tFromCenter));
+      const tangentPointFrom = sub(center, fromOffset);
+      const tangentPointTo = sub(center, toOffset);
+      const tFrom = dot(sub(tangentPointFrom, from.p), from.u);
+      const tTo = dot(sub(tangentPointTo, to.p), to.u);
+      const a0 = angleOf(sub(tangentPointFrom, center));
+      const endAngle = angleOf(sub(tangentPointTo, center));
+      for (const dir of [1, -1] as const) {
+        let span = normalizeAngle(endAngle - a0);
+        if (dir === 1 && span < 0) span += 2 * Math.PI;
+        if (dir === -1 && span > 0) span -= 2 * Math.PI;
+        if (Math.abs(span) < EPS || Math.abs(span) > Math.PI + EPS) continue;
+        const arc: Arc = { kind: 'arc', c: center, r: radius, a0, a1: a0 + span, dir };
+        if (dot(getArcTangent(arc, arc.a0), from.u) < 0.999) continue;
+        if (dot(getArcTangent(arc, arc.a1), to.u) < 0.999) continue;
+        solutions.push({
+          tangentPointFrom,
+          tangentPointTo,
+          tFrom,
+          tTo,
+          centerRate: scale(sub(center, intersection), 1 / radius),
+          arc
+        });
+      }
+    }
+  }
+  return solutions;
 }

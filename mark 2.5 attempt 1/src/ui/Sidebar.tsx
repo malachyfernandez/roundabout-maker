@@ -163,7 +163,7 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                 if (connection.toArmId === oldId) connection.toArmId = newId;
               });
             });
-            if ((selection?.kind === 'lane' || selection?.kind === 'arm') && selection.armId === arm.id) {
+            if ((selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'profile-point') && selection.armId === arm.id) {
               setSelection({ ...selection, armId: newId });
             }
           }} style={{marginLeft: 4, width: 150}} />
@@ -176,8 +176,9 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
         )}
 
         <RoadProfileEditor
-          arm={arm}
-          onChange={updated => handleChange(c => { c.arms[i] = updated; })}
+          config={config}
+          armId={arm.id}
+          onChange={onChange}
         />
 
         {/* Entry Lanes */}
@@ -206,7 +207,11 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                 })} style={{ position: 'absolute', top: 2, right: 2, color: 'red', border: 'none', background: 'none', cursor: 'pointer' }}>✕</button>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 8px', alignItems: 'center', paddingRight: 16 }}>
                   <span>Target:</span>
-                  <select value={lane.targetsRing} onChange={e => handleChange(c => c.arms[i].lanesIn[li].targetsRing = e.target.value)}>
+                  <select value={lane.targetsRing ?? ''} onChange={e => handleChange(c => {
+                    if (e.target.value) c.arms[i].lanesIn[li].targetsRing = e.target.value;
+                    else delete c.arms[i].lanesIn[li].targetsRing;
+                  })}>
+                    <option value="">Automatic</option>
                     {config.rings.map(r => <option key={r.id} value={r.id}>{r.id}</option>)}
                   </select>
                   <span>Fillet R:</span>
@@ -262,7 +267,11 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                 })} style={{ position: 'absolute', top: 2, right: 2, color: 'red', border: 'none', background: 'none', cursor: 'pointer' }}>✕</button>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 8px', alignItems: 'center', paddingRight: 16 }}>
                   <span>Source:</span>
-                  <select value={lane.sourceRing} onChange={e => handleChange(c => c.arms[i].lanesOut[li].sourceRing = e.target.value)}>
+                  <select value={lane.sourceRing ?? ''} onChange={e => handleChange(c => {
+                    if (e.target.value) c.arms[i].lanesOut[li].sourceRing = e.target.value;
+                    else delete c.arms[i].lanesOut[li].sourceRing;
+                  })}>
+                    <option value="">Automatic</option>
                     {config.rings.map(r => <option key={r.id} value={r.id}>{r.id}</option>)}
                   </select>
                   <span>Fillet R:</span>
@@ -320,7 +329,7 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
       {!selection && renderGlobal()}
       {selection?.kind === 'island' && renderIsland()}
       {selection?.kind === 'ring' && renderRing(selection.ringId)}
-      {(selection?.kind === 'lane' || selection?.kind === 'arm') && renderArm(selection.armId)}
+      {(selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'profile-point') && renderArm(selection.armId)}
     </div>
   );
 };

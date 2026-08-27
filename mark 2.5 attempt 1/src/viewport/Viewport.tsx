@@ -1,16 +1,22 @@
 import React, { useState, useRef } from 'react';
-import { ArrowLeftRight } from 'lucide-react';
+import { ArrowLeftRight, Trash2 } from 'lucide-react';
+import { type ArmConfig } from '../config/types';
 import { type ResolvedSegment } from '../core/solver';
 import { useEditorStore } from '../editor/editorStore';
 import { GeometryLayer } from '../canvas/GeometryLayer';
 import { HandlesLayer } from '../canvas/HandlesLayer';
+import { LaneProfileLayer } from '../canvas/LaneProfileLayer';
 import { CenterlineLayer } from '../canvas/CenterlineLayer';
 import { MarkingsLayer } from '../canvas/MarkingsLayer';
 import { FloatingButton } from '../ui/FloatingButton';
+import { DELETE_SHORTCUT, matchesShortcut } from '../ui/keyboard';
 import { screenToWorld, worldToScreen } from './transform';
 import { type Vec2, len, sub } from '../math/vector';
-import { isRightTurnPair } from '../core/bypass';
+import { connectBypassLanes, isRightTurnPair } from '../core/bypass';
 import { swapArmDirection } from '../editor/constraints';
+import { resolveLaneRing } from '../core/routes';
+import { estimateArmLength, getRoadProfile, removeProfileLane, removeProfilePoint } from '../core/profile';
+import { sampleSpline } from '../math/spline';
 
 type Props = {
   segments: ResolvedSegment[];
@@ -18,6 +24,9 @@ type Props = {
 
 const DEFAULT_BACKGROUND = '/default-background.png';
 const PASS_THROUGH_EXIT_TOLERANCE = 12;
+const SMART_FOCUS_ZOOM = 0.35;
+const SMART_ZOOM_MARGIN = 0.14;
+const SMART_ZOOM_DURATION = 280;
 
 const hitTestTargets = (x: number, y: number, passThroughStack: string[]) => {
   const elements = document.elementsFromPoint(x, y);
@@ -37,6 +46,26 @@ const isTooltipElement = (element: Element) =>
   element instanceof HTMLInputElement ||
   element instanceof HTMLSelectElement;
 
+const profilePointPosition = (arm: ArmConfig, pointId: string) => {
+  const point = getRoadProfile(arm, estimateArmLength(arm)).find(candidate => candidate.id === pointId);
+  if (!point) return null;
+  const samples = sampleSpline({ points: arm.nodes.map(node => node.point), nodes: arm.nodes, alpha: 0.5, tension: 0 }, Math.max(120, arm.nodes.length * 60));
+  if (!samples.length) return null;
+  let distance = 0;
+  for (let index = 1; index < samples.length; index++) {
+    const segmentLength = len(sub(samples[index].p, samples[index - 1].p));
+    if (distance + segmentLength >= point.distance) {
+      const t = segmentLength ? (point.distance - distance) / segmentLength : 0;
+      return {
+        x: samples[index - 1].p.x + (samples[index].p.x - samples[index - 1].p.x) * t,
+        y: samples[index - 1].p.y + (samples[index].p.y - samples[index - 1].p.y) * t
+      };
+    }
+    distance += segmentLength;
+  }
+  return samples[samples.length - 1].p;
+};
+
 export const Viewport: React.FC<Props> = ({ segments }) => {
   const getStored = <T,>(key: string, fallback: T): T => {
     const saved = localStorage.getItem(key);
@@ -49,9 +78,17 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   const [bgSize, setBgSize] = useState(() => getStored('roundabout_bgSize', 200));
   const [pan, setPan] = useState(() => getStored('roundabout_pan', { x: 0, y: 0 }));
   const [zoom, setZoom] = useState(() => getStored('roundabout_zoom', 1));
+  const panRef = useRef(pan);
+  const zoomRef = useRef(zoom);
+  const viewAnimationRef = useRef<number | null>(null);
+
+  React.useEffect(() => { panRef.current = pan; }, [pan]);
+  React.useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
   React.useEffect(() => {
     const reset = () => {
+      if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
+      viewAnimationRef.current = null;
       setBgImage(DEFAULT_BACKGROUND);
       setBgOpacity(0.5);
       setBgSize(200);
@@ -103,6 +140,60 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   const vx = pan.x - width / 2;
   const vy = pan.y - height / 2;
 
+  const cancelViewAnimation = React.useCallback(() => {
+    if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
+    viewAnimationRef.current = null;
+  }, []);
+
+  const smartZoom = React.useCallback((points: Vec2[], mode: 'focus' | 'fit') => {
+    if (!settings.smartZoom || points.length === 0) return;
+    const currentPan = panRef.current;
+    const currentZoom = zoomRef.current;
+    const safeHalfSize = baseViewSize * currentZoom * (0.5 - SMART_ZOOM_MARGIN);
+    const allVisible = points.every(point => Math.abs(point.x - currentPan.x) <= safeHalfSize && Math.abs(point.y - currentPan.y) <= safeHalfSize);
+    if (allVisible && (mode === 'fit' || currentZoom <= SMART_FOCUS_ZOOM)) return;
+
+    const minX = Math.min(...points.map(point => point.x));
+    const maxX = Math.max(...points.map(point => point.x));
+    const minY = Math.min(...points.map(point => point.y));
+    const maxY = Math.max(...points.map(point => point.y));
+    const usableSize = baseViewSize * (1 - SMART_ZOOM_MARGIN * 2);
+    const fitZoom = Math.max((maxX - minX) / usableSize, (maxY - minY) / usableSize, 0.1);
+    const targetZoom = Math.min(20, mode === 'focus' ? Math.max(Math.min(currentZoom, SMART_FOCUS_ZOOM), fitZoom) : Math.max(currentZoom, fitZoom));
+    const targetHalfSize = baseViewSize * targetZoom * (0.5 - SMART_ZOOM_MARGIN);
+    const keepRangeVisible = (current: number, min: number, max: number) => {
+      const lower = max - targetHalfSize;
+      const upper = min + targetHalfSize;
+      return lower <= upper ? Math.max(lower, Math.min(upper, current)) : (min + max) / 2;
+    };
+    const targetPan = {
+      x: keepRangeVisible(currentPan.x, minX, maxX),
+      y: keepRangeVisible(currentPan.y, minY, maxY)
+    };
+    if (Math.abs(targetZoom - currentZoom) < 1e-4 && len(sub(targetPan, currentPan)) < 1e-3) return;
+
+    cancelViewAnimation();
+    const start = performance.now();
+    const animate = (now: number) => {
+      const progress = Math.min(1, (now - start) / SMART_ZOOM_DURATION);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const nextZoom = currentZoom + (targetZoom - currentZoom) * eased;
+      const nextPan = {
+        x: currentPan.x + (targetPan.x - currentPan.x) * eased,
+        y: currentPan.y + (targetPan.y - currentPan.y) * eased
+      };
+      zoomRef.current = nextZoom;
+      panRef.current = nextPan;
+      setZoom(nextZoom);
+      setPan(nextPan);
+      viewAnimationRef.current = progress < 1 ? requestAnimationFrame(animate) : null;
+    };
+    viewAnimationRef.current = requestAnimationFrame(animate);
+  }, [cancelViewAnimation, settings.smartZoom]);
+
+  React.useEffect(() => cancelViewAnimation, [cancelViewAnimation]);
+  React.useEffect(() => { if (!settings.smartZoom) cancelViewAnimation(); }, [cancelViewAnimation, settings.smartZoom]);
+
   // Native non-passive wheel listener so preventDefault works for trackpad gestures.
   // React's onWheel uses passive listeners in some browsers, making preventDefault a no-op.
   React.useEffect(() => {
@@ -110,6 +201,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
     if (!svg) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      cancelViewAnimation();
       const rect = svg.getBoundingClientRect();
 
       // Pinch-to-zoom on trackpads fires with ctrlKey=true.
@@ -145,7 +237,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
     };
     svg.addEventListener('wheel', onWheel, { passive: false });
     return () => svg.removeEventListener('wheel', onWheel);
-  }, [zoom, vx, vy, width, height, settings]);
+  }, [zoom, vx, vy, width, height, settings, cancelViewAnimation]);
 
   // Re-evaluate hover at the last known mouse position, skipping passed-through targets.
   // Used both by pointermove and the P key handler so hover updates immediately.
@@ -186,8 +278,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   // Pass-through keyboard shortcut: press P to pass through the currently hovered target
   React.useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
-      if (event.key !== 'p' && event.key !== 'P') return;
+      if (!matchesShortcut(event, { key: 'P' })) return;
       const hovered = useEditorStore.getState().hovered;
       if (!hovered) return;
       event.preventDefault();
@@ -201,6 +292,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   }, [pushPassThrough, reevaluateHover]);
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    cancelViewAnimation();
     // If we clicked a handle, let the handle capture it.
     if ((e.target as Element).closest('[data-handle]')) return;
 
@@ -218,16 +310,11 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
           const sourceArm = next.arms.find(arm => arm.id === pendingBypassSource.armId);
           const targetArm = next.arms.find(arm => arm.id === target.armId);
           if (target.kind !== 'lane' || target.dir !== 'out' || !isRightTurnPair(sourceArm, targetArm)) return;
-          next.bypasses = (next.bypasses ?? []).filter(connection => connection.fromArmId !== pendingBypassSource.armId || connection.fromLaneIndex !== pendingBypassSource.laneIndex);
-          next.bypasses.push({
-            id: `turn_${id}`,
-            fromArmId: pendingBypassSource.armId,
-            fromLaneIndex: pendingBypassSource.laneIndex,
-            toArmId: target.armId,
-            toLaneIndex: target.laneIndex,
-            radius: 32
-          });
-          setCommittedConfig(next);
+          const sourceLane = { kind: 'lane' as const, armId: pendingBypassSource.armId, dir: 'in' as const, laneIndex: pendingBypassSource.laneIndex };
+          const targetLane = { kind: 'lane' as const, armId: target.armId, dir: 'out' as const, laneIndex: target.laneIndex };
+          const connected = connectBypassLanes(next, sourceLane, targetLane, 32);
+          if (!connected) return;
+          setCommittedConfig(connected);
           setSelection({ kind: 'lane', armId: pendingBypassSource.armId, dir: 'in', laneIndex: pendingBypassSource.laneIndex });
           setPendingBypassSource(null);
           setActiveTool('select');
@@ -250,12 +337,13 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         }
         if (len(sub(point, pendingRoadStart)) < 20) return;
         const armId = `road_${id}`;
-        const ringId = next.rings[0]?.id || '';
-        // Order nodes so the one closest to the roundabout center is nodes[0].
+        // Order nodes so the one closest to any roundabout ring is nodes[0].
         // The road direction is defined by node order: nodes[0] is the roundabout-facing end.
-        const islandCenter = next.island.center;
-        const distStart = len(sub(pendingRoadStart, islandCenter));
-        const distEnd = len(sub(point, islandCenter));
+        const distanceToRoundabout = (candidate: Vec2) => next.rings.length > 0
+          ? Math.min(...next.rings.map(ring => len(sub(candidate, ring.center))))
+          : len(sub(candidate, next.island.center));
+        const distStart = distanceToRoundabout(pendingRoadStart);
+        const distEnd = distanceToRoundabout(point);
         const nearPoint = distStart <= distEnd ? pendingRoadStart : point;
         const farPoint = distStart <= distEnd ? point : pendingRoadStart;
         next.arms.push({
@@ -264,8 +352,8 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
             { id: `${armId}_0`, point: nearPoint, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] },
             { id: `${armId}_1`, point: farPoint, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] }
           ],
-          lanesIn: ringId ? [{ targetsRing: ringId, filletRadius: 40 }] : [],
-          lanesOut: ringId ? [{ sourceRing: ringId, filletRadius: 40, dropsRing: false }] : []
+          lanesIn: [{ filletRadius: 40 }],
+          lanesOut: [{ filletRadius: 40, dropsRing: false }]
         });
         setCommittedConfig(next);
         setSelection({ kind: 'arm', armId });
@@ -334,7 +422,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
       <div style={{ position: 'absolute', top: 16, right: 16, background: 'white', padding: 12, borderRadius: 8, boxShadow: '0 2px 10px rgba(0,0,0,0.1)', zIndex: 10 }}>
         <h4 style={{ margin: '0 0 8px 0' }}>Viewport</h4>
         <div style={{ marginBottom: 8 }}>
-          <button data-tooltip="Reset canvas pan and zoom without changing the design." onClick={() => { setZoom(1); setPan({x:0, y:0}); }} style={{ padding: '4px 8px' }}>Reset View</button>
+          <button data-tooltip="Reset canvas pan and zoom without changing the design." onClick={() => { cancelViewAnimation(); setZoom(1); setPan({x:0, y:0}); }} style={{ padding: '4px 8px' }}>Reset View</button>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
           <label>
@@ -362,6 +450,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         viewBox={`${vx} ${vy} ${width} ${height}`} 
         style={{ width: '100%', height: '100%', cursor: modalToolActive ? 'crosshair' : isDragging ? 'grabbing' : 'default', touchAction: 'none' }}
         data-tooltip={activeTool === 'connect-bypass' ? 'Click a highlighted exit lane on another road to complete the right-turn bypass.' : activeTool === 'add-road' ? (pendingRoadStart ? 'Click to place the outer endpoint of the new road.' : 'Click to place the roundabout end of the new road.') : activeTool === 'add-ring' ? 'Click to place a new ring center.' : undefined}
+        onPointerDownCapture={cancelViewAnimation}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -397,8 +486,65 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
           <MarkingsLayer config={draftConfig || committedConfig} segments={segments} zoom={zoom} />
         )}
         <CenterlineLayer config={draftConfig || committedConfig} zoom={zoom} />
+        <LaneProfileLayer zoom={zoom} onSmartZoom={smartZoom} />
         <HandlesLayer zoom={zoom} segments={segments} />
       </svg>
+      {selection?.kind === 'ring' && svgRef.current && (() => {
+        const ring = committedConfig.rings.find(candidate => candidate.id === selection.ringId);
+        if (!ring) return null;
+        const rect = svgRef.current.getBoundingClientRect();
+        return (
+          <FloatingButton
+            key={`${selection.ringId}-delete`}
+            storageKey="delete_ring"
+            anchorPoint={worldToScreen(ring.center, svgRef.current)}
+            defaultOffset={{ x: 24, y: -24 }}
+            bounds={{ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }}
+            label="Delete Ring"
+            tooltip="Delete this ring."
+            shortcut={DELETE_SHORTCUT}
+            icon={<Trash2 size={14} />}
+            onClick={() => {
+              if (!window.confirm(`Delete ring ${selection.ringId}?`)) return;
+              const next = structuredClone(committedConfig);
+              next.rings = next.rings.filter(candidate => candidate.id !== selection.ringId);
+              for (const arm of next.arms) {
+                for (const lane of arm.lanesIn) if (lane.targetsRing === selection.ringId) delete lane.targetsRing;
+                for (const lane of arm.lanesOut) if (lane.sourceRing === selection.ringId) delete lane.sourceRing;
+              }
+              setCommittedConfig(next);
+              setSelection(null);
+            }}
+          />
+        );
+      })()}
+      {selection?.kind === 'profile-point' && svgRef.current && (() => {
+        const arm = committedConfig.arms.find(candidate => candidate.id === selection.armId);
+        const position = arm && profilePointPosition(arm, selection.pointId);
+        if (!arm || !position) return null;
+        const profile = getRoadProfile(arm, estimateArmLength(arm));
+        const pointIndex = profile.findIndex(point => point.id === selection.pointId);
+        const canDelete = profile.length > 2 && pointIndex > 0 && pointIndex < profile.length - 1;
+        const rect = svgRef.current.getBoundingClientRect();
+        return (
+          <FloatingButton
+            key={`${selection.armId}-${selection.pointId}-delete`}
+            storageKey="delete_lane_point"
+            anchorPoint={worldToScreen(position, svgRef.current)}
+            defaultOffset={{ x: 24, y: -24 }}
+            bounds={{ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }}
+            label="Delete Lane Point"
+            tooltip={canDelete ? 'Delete this lane point.' : 'The first and last lane points cannot be deleted.'}
+            shortcut={DELETE_SHORTCUT}
+            icon={<Trash2 size={14} />}
+            disabled={!canDelete}
+            onClick={() => {
+              setCommittedConfig(removeProfilePoint(committedConfig, selection.armId, selection.pointId));
+              setSelection({ kind: 'arm', armId: selection.armId });
+            }}
+          />
+        );
+      })()}
       {selection?.kind === 'arm' && svgRef.current && (() => {
         const svg = svgRef.current;
         const arm = (draftConfig || committedConfig).arms.find(a => a.id === selection.armId);
@@ -424,18 +570,67 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         const bounds = { left: rect.left, top: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height };
 
         return (
+          <>
+            <FloatingButton
+              key={`${selection.armId}-swap`}
+              storageKey="swap_direction"
+              anchorPoint={anchorPoint}
+              defaultOffset={{ x: 24, y: -48 }}
+              bounds={bounds}
+              label="Swap Direction"
+              tooltip="Reverse which end connects to the roundabout."
+              shortcut={{ key: 'S' }}
+              icon={<ArrowLeftRight size={14} />}
+              onClick={() => {
+                const next = swapArmDirection(committedConfig, selection.armId);
+                setCommittedConfig(next);
+              }}
+            />
+            <FloatingButton
+              key={`${selection.armId}-delete`}
+              storageKey="delete_road"
+              anchorPoint={anchorPoint}
+              defaultOffset={{ x: 24, y: -4 }}
+              bounds={bounds}
+              label="Delete Road"
+              tooltip="Delete this road."
+              shortcut={DELETE_SHORTCUT}
+              icon={<Trash2 size={14} />}
+              onClick={() => {
+                if (!window.confirm(`Delete road ${selection.armId}?`)) return;
+                const next = structuredClone(committedConfig);
+                next.arms = next.arms.filter(candidate => candidate.id !== selection.armId);
+                next.bypasses = (next.bypasses ?? []).filter(bypass => bypass.fromArmId !== selection.armId && bypass.toArmId !== selection.armId);
+                setCommittedConfig(next);
+                setSelection(null);
+              }}
+            />
+          </>
+        );
+      })()}
+      {selection?.kind === 'lane' && svgRef.current && (() => {
+        const svg = svgRef.current;
+        const arm = committedConfig.arms.find(candidate => candidate.id === selection.armId);
+        const lane = selection.dir === 'in' ? arm?.lanesIn[selection.laneIndex] : arm?.lanesOut[selection.laneIndex];
+        if (!arm || !lane) return null;
+        const ring = resolveLaneRing(committedConfig, arm, selection.dir, selection.laneIndex);
+        const anchor = ring?.center ?? arm.nodes[0]?.point;
+        if (!anchor) return null;
+        const rect = svg.getBoundingClientRect();
+        return (
           <FloatingButton
-            key={selection.armId}
-            storageKey="swap_direction"
-            anchorPoint={anchorPoint}
-            defaultOffset={{ x: 24, y: -48 }}
-            bounds={bounds}
-            label="Swap Direction"
-            tooltip="Reverse the road's direction so the other end connects to the roundabout."
-            icon={<ArrowLeftRight size={14} />}
+            key={`${selection.armId}-${selection.dir}-${selection.laneIndex}-delete`}
+            storageKey="delete_lane"
+            anchorPoint={worldToScreen(anchor, svg)}
+            defaultOffset={{ x: 24, y: selection.dir === 'out' ? 20 : -24 }}
+            bounds={{ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }}
+            label="Delete Lane"
+            tooltip={`Delete this ${selection.dir === 'in' ? 'entry' : 'exit'} lane.`}
+            shortcut={DELETE_SHORTCUT}
+            icon={<Trash2 size={14} />}
             onClick={() => {
-              const next = swapArmDirection(committedConfig, selection.armId);
-              setCommittedConfig(next);
+              setCommittedConfig(removeProfileLane(committedConfig, selection.armId, selection.dir, selection.laneIndex));
+              setSelection({ kind: 'arm', armId: selection.armId });
             }}
           />
         );
@@ -446,7 +641,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         const arm = config.arms.find(a => a.id === selection.armId);
         const lane = arm?.lanesOut[selection.laneIndex];
         if (!arm || !lane) return null;
-        const ring = config.rings.find(r => r.id === lane.sourceRing);
+        const ring = resolveLaneRing(config, arm, 'out', selection.laneIndex);
         if (!ring) return null;
         const rect = svg.getBoundingClientRect();
         const anchorPoint = worldToScreen(ring.center, svg);
@@ -460,6 +655,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
             bounds={bounds}
             label="Drops Ring"
             tooltip="When checked, this exit lane drops the remainder of its source ring instead of continuing the circle."
+            shortcut={{ key: 'D' }}
             checked={lane.dropsRing}
             onClick={() => {
               const next = structuredClone(committedConfig);

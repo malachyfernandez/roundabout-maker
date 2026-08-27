@@ -1,5 +1,5 @@
 import { type ArmNode, type RoundaboutConfig } from '../config/types';
-import { type Vec2, add, dot, len, lerp, norm, scale, sub } from '../math/vector';
+import { type Vec2, add, angleOf, dot, len, lerp, norm, rot, scale, sub } from '../math/vector';
 import { getBezierSegment } from '../math/spline';
 import { solveLaneRingAttachmentPoint } from '../core/routes';
 
@@ -44,7 +44,7 @@ export function dragRingWidth(ringId: string, direction: Vec2, delta: Vec2, orig
   return next;
 }
 
-export function dragLaneFilletRadius(armId: string, dir: 'in' | 'out', laneIndex: number, direction: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+export function dragLaneFilletRadius(armId: string, dir: 'in' | 'out', laneIndex: number, centerRate: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
   const next = structuredClone(original);
   const arm = next.arms.find(candidate => candidate.id === armId);
   const source = original.arms.find(candidate => candidate.id === armId);
@@ -53,15 +53,62 @@ export function dragLaneFilletRadius(armId: string, dir: 'in' | 'out', laneIndex
   const sourceLanes = dir === 'in' ? source.lanesIn : source.lanesOut;
   if (!lanes[laneIndex] || !sourceLanes[laneIndex]) return next;
   const radius = sourceLanes[laneIndex].filletRadius ?? 15;
-  lanes[laneIndex].filletRadius = Math.max(5, Math.round((radius + dot(delta, direction)) * 10) / 10);
+  const rateSquared = dot(centerRate, centerRate);
+  const radiusDelta = rateSquared > 1e-9 ? dot(delta, centerRate) / rateSquared : 0;
+  lanes[laneIndex].filletRadius = Math.max(5, Math.round((radius + radiusDelta) * 10) / 10);
   return next;
 }
 
-export function dragBypassRadius(bypassId: string, direction: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+export function dragBypassConnectorRadius(bypassId: string, connector: 'entry' | 'exit', centerRate: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
   const next = structuredClone(original);
   const bypass = next.bypasses?.find(candidate => candidate.id === bypassId);
   const source = original.bypasses?.find(candidate => candidate.id === bypassId);
-  if (bypass && source) bypass.radius = Math.max(8, Math.round((source.radius + dot(delta, direction)) * 10) / 10);
+  if (!bypass || !source) return next;
+  const rateSquared = dot(centerRate, centerRate);
+  const radiusDelta = rateSquared > 1e-9 ? dot(delta, centerRate) / rateSquared : 0;
+  const sourceRadius = connector === 'entry' ? source.entryRadius ?? source.radius ?? 32 : source.exitRadius ?? source.radius ?? 32;
+  const radius = Math.max(2, Math.min(200, Math.round((sourceRadius + radiusDelta) * 10) / 10));
+  if (connector === 'entry') bypass.entryRadius = radius;
+  else bypass.exitRadius = radius;
+  return next;
+}
+
+export function dragBypassLanePoint(bypassId: string, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const bypass = next.bypasses?.find(candidate => candidate.id === bypassId);
+  const source = original.bypasses?.find(candidate => candidate.id === bypassId);
+  if (!bypass || !source) return next;
+  // Restrict movement to the radial direction (toward/away from the
+  // outermost ring center). This conserves space and keeps the bypass
+  // lane near the roundabout edge.
+  const outerRing = original.rings.reduce((outer, ring) =>
+    !outer || ring.radius + ring.width / 2 > outer.radius + outer.width / 2 ? ring : outer
+  , original.rings[0]);
+  const center = outerRing?.center ?? { x: 0, y: 0 };
+  const radial = sub(source.lanePoint, center);
+  const radialLen = len(radial);
+  const radialDir = radialLen > 1e-9 ? scale(radial, 1 / radialLen) : { x: 1, y: 0 };
+  const radialDelta = dot(delta, radialDir);
+  const newRadial = radialLen + radialDelta;
+  bypass.lanePoint = {
+    x: Math.round((center.x + radialDir.x * newRadial) * 10) / 10,
+    y: Math.round((center.y + radialDir.y * newRadial) * 10) / 10
+  };
+  return next;
+}
+
+export function dragBypassLaneAngle(bypassId: string, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const bypass = next.bypasses?.find(candidate => candidate.id === bypassId);
+  const source = original.bypasses?.find(candidate => candidate.id === bypassId);
+  if (!bypass || !source) return next;
+  // Compute the angle change from the drag delta projected onto the
+  // perpendicular of the original lane direction. The rotation handle
+  // sits 30 units along the lane direction from the placement point.
+  const originalDir = { x: Math.cos(source.laneAngle), y: Math.sin(source.laneAngle) };
+  const perp = { x: -originalDir.y, y: originalDir.x };
+  const angularDelta = dot(delta, perp) / 30;
+  bypass.laneAngle = source.laneAngle + angularDelta;
   return next;
 }
 
@@ -84,16 +131,18 @@ export function getLaneRingSnapPoints(config: RoundaboutConfig, armId: string, d
   }).filter((point): point is LaneRingSnapPoint => point !== null);
 }
 
-export function dragLaneRingTarget(armId: string, dir: 'in' | 'out', laneIndex: number, sourcePoint: Vec2, snapPoints: LaneRingSnapPoint[], delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+export function assignLaneRingTarget(armId: string, dir: 'in' | 'out', laneIndex: number, ringId: string, original: RoundaboutConfig): RoundaboutConfig {
   const next = structuredClone(original);
   const arm = next.arms.find(candidate => candidate.id === armId);
-  if (!arm || snapPoints.length === 0) return next;
-  const pointer = add(sourcePoint, delta);
-  const nearest = snapPoints.reduce((best, candidate) => len(sub(candidate.point, pointer)) < len(sub(best.point, pointer)) ? candidate : best);
+  if (!arm) return next;
   if (dir === 'in') {
-    if (arm.lanesIn[laneIndex]) arm.lanesIn[laneIndex].targetsRing = nearest.ringId;
-  } else if (arm.lanesOut[laneIndex]) {
-    arm.lanesOut[laneIndex].sourceRing = nearest.ringId;
+    if (!arm.lanesIn[laneIndex]) return next;
+    arm.lanesIn[laneIndex].targetsRing = ringId;
+    next.bypasses = next.bypasses?.filter(bypass => bypass.fromArmId !== armId || bypass.fromLaneIndex !== laneIndex);
+  } else {
+    if (!arm.lanesOut[laneIndex]) return next;
+    arm.lanesOut[laneIndex].sourceRing = ringId;
+    next.bypasses = next.bypasses?.filter(bypass => bypass.toArmId !== armId || bypass.toLaneIndex !== laneIndex);
   }
   return next;
 }
@@ -101,15 +150,42 @@ export function dragLaneRingTarget(armId: string, dir: 'in' | 'out', laneIndex: 
 export function dragArmNode(armId: string, nodeId: string, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
   const next = JSON.parse(JSON.stringify(original)) as RoundaboutConfig;
   const arm = next.arms.find(a => a.id === armId);
-  if (arm) {
-    const node = arm.nodes.find(n => n.id === nodeId);
-    if (node) {
-      node.point = {
-        x: Math.round(node.point.x + delta.x),
-        y: Math.round(node.point.y + delta.y)
-      };
-    }
+  if (!arm) return next;
+  const index = arm.nodes.findIndex(n => n.id === nodeId);
+  if (index < 0) return next;
+  const node = arm.nodes[index];
+  const oldPoint = { x: node.point.x, y: node.point.y };
+  node.point = {
+    x: Math.round(node.point.x + delta.x),
+    y: Math.round(node.point.y + delta.y)
+  };
+
+  // Rotate explicit tangents to preserve their angle relative to the
+  // node-to-neighbor direction. This keeps straight roads straight when
+  // dragging end nodes, and preserves curve shapes on curved roads.
+  const rotateTangent = (tangent: Vec2 | undefined, oldDir: Vec2, newDir: Vec2): Vec2 | undefined => {
+    if (!tangent) return undefined;
+    const tangentLen = len(tangent);
+    if (tangentLen < 1e-9) return tangent;
+    const rotation = angleOf(newDir) - angleOf(oldDir);
+    return rot(tangent, rotation);
+  };
+
+  if (index > 0) {
+    const prev = arm.nodes[index - 1];
+    // This node's tangentIn points toward the previous node
+    node.tangentIn = rotateTangent(node.tangentIn, sub(prev.point, oldPoint), sub(prev.point, node.point));
+    // Previous node's tangentOut points toward this node
+    prev.tangentOut = rotateTangent(prev.tangentOut, sub(oldPoint, prev.point), sub(node.point, prev.point));
   }
+  if (index < arm.nodes.length - 1) {
+    const nextNode = arm.nodes[index + 1];
+    // This node's tangentOut points toward the next node
+    node.tangentOut = rotateTangent(node.tangentOut, sub(nextNode.point, oldPoint), sub(nextNode.point, node.point));
+    // Next node's tangentIn points toward this node
+    nextNode.tangentIn = rotateTangent(nextNode.tangentIn, sub(oldPoint, nextNode.point), sub(node.point, nextNode.point));
+  }
+
   return next;
 }
 

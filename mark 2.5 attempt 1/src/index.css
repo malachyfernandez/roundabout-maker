@@ -374,6 +374,19 @@ button:disabled {
   pointer-events: none;
 }
 
+.floating-button-shortcut {
+  min-width: 20px;
+  padding: 2px 5px;
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  font: 700 9px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: center;
+  pointer-events: none;
+}
+
 .floating-button-grip {
   display: flex;
   align-items: center;

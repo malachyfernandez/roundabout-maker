@@ -7,12 +7,13 @@ import { type RoundaboutConfig, type SelectionTarget } from './config';
 export type ResolvedSegment = {
   routeId: string;
   segIndex: number;
-  kind: 'entry-line' | 'entry-fillet' | 'ring-arc' | 'exit-fillet' | 'exit-line' | 'bypass-entry' | 'bypass-curve' | 'bypass-exit';
+  kind: 'entry-line' | 'entry-fillet' | 'ring-arc' | 'exit-fillet' | 'exit-line' | 'bypass-entry' | 'bypass-entry-connector' | 'bypass-lane' | 'bypass-exit-connector' | 'bypass-exit';
   geom: Segment;
   color: string;
   wStart: number;
   wEnd: number;
   widths?: number[];
+  radiusCenterRate?: Vec2;
   source: SelectionTarget;
 };
 
@@ -65,12 +66,22 @@ function trimPolylineAtFillet(points: Vec2[], widths: number[], tangentPoint: Ve
   return { points: trimmedPoints, widths: trimmedWidths };
 }
 
+function trimInvisibleLaneEnds(points: Vec2[], widths: number[]): { points: Vec2[]; widths: number[] } {
+  const firstVisible = widths.findIndex(width => width > .05);
+  if (firstVisible < 0) return { points: [], widths: [] };
+  let lastVisible = widths.length - 1;
+  while (lastVisible > firstVisible && (widths[lastVisible] ?? 0) <= .05) lastVisible--;
+  const start = Math.max(0, firstVisible - 1);
+  const end = Math.min(points.length, lastVisible + 2);
+  return { points: points.slice(start, end), widths: widths.slice(start, end) };
+}
+
 function countSegments(routes: RouteSymbolic[]): number {
   return routes.reduce(
     (n, r) => {
       if (r.kind === 'through') return n + 5;
       if (r.kind === 'profile-lane') return n + 1;
-      if (r.kind === 'bypass') return n + 3;
+      if (r.kind === 'bypass') return n + 5;
       if (r.kind === 'full-ring') return n + 1;
       return n + 2;
     },
@@ -96,7 +107,8 @@ export function solveGeometry(
 
   const pushEntry = (routeId: string, leg: EntryLeg, ringWidth: number, segIndex: number) => {
     // Trim the polyline at the fillet tangent point so the road stops where the turn begins.
-    const trimmed = trimPolylineAtFillet(leg.points, leg.widths, leg.fillet.tangentPointLine);
+    const atFillet = trimPolylineAtFillet(leg.points, leg.widths, leg.fillet.tangentPointLine);
+    const trimmed = trimInvisibleLaneEnds(atFillet.points, atFillet.widths);
     const width = trimmed.widths[0] ?? entryWidth(leg);
     const entryLineGeom = { kind: 'polyline' as const, points: trimmed.points };
     const source: SelectionTarget = { kind: 'lane', armId: leg.armId, dir: 'in', laneIndex: leg.laneIdx };
@@ -113,7 +125,8 @@ export function solveGeometry(
 
   const pushExit = (routeId: string, leg: ExitLeg, ringWidth: number, segIndex: number) => {
     // Trim the polyline at the fillet tangent point so the road starts where the turn ends.
-    const trimmed = trimPolylineAtFillet(leg.points, leg.widths, leg.fillet.tangentPointLine);
+    const atFillet = trimPolylineAtFillet(leg.points, leg.widths, leg.fillet.tangentPointLine);
+    const trimmed = trimInvisibleLaneEnds(atFillet.points, atFillet.widths);
     const width = trimmed.widths[0] ?? exitWidth(leg);
     const exitLineGeom = { kind: 'polyline' as const, points: trimmed.points };
     const source: SelectionTarget = { kind: 'lane', armId: leg.armId, dir: 'out', laneIndex: leg.laneIdx };
@@ -132,15 +145,17 @@ export function solveGeometry(
     switch (route.kind) {
       case 'profile-lane': {
         const source: SelectionTarget = { kind: 'lane', armId: route.armId, dir: route.dir, laneIndex: route.laneIdx };
+        const trimmed = trimInvisibleLaneEnds(route.points, route.widths);
+        if (trimmed.points.length < 2) break;
         resolved.push({
           routeId: route.id,
           segIndex: 0,
           kind: route.dir === 'in' ? 'entry-line' : 'exit-line',
-          geom: { kind: 'polyline', points: route.points },
+          geom: { kind: 'polyline', points: trimmed.points },
           color: generateHue(colorIdx++, totalSegs),
-          wStart: route.widths[0] ?? 0,
-          wEnd: route.widths.at(-1) ?? 0,
-          widths: route.widths,
+          wStart: trimmed.widths[0] ?? 0,
+          wEnd: trimmed.widths.at(-1) ?? 0,
+          widths: trimmed.widths,
           source
         });
         break;
@@ -148,26 +163,43 @@ export function solveGeometry(
       case 'bypass': {
         const entrySource: SelectionTarget = { kind: 'lane', armId: route.entry.armId, dir: 'in', laneIndex: route.entry.laneIdx };
         const exitSource: SelectionTarget = { kind: 'lane', armId: route.exit.armId, dir: 'out', laneIndex: route.exit.laneIdx };
+        const entry = trimPolylineAtFillet(route.entry.points, route.entry.widths, route.entryConnector.tangentPointFrom);
+        const exit = trimPolylineAtFillet(route.exit.points, route.exit.widths, route.exitConnector.tangentPointTo);
+        const entryWidth = entry.widths[0] ?? 10;
+        const exitWidth = exit.widths[0] ?? 10;
         resolved.push({
           routeId: route.id, segIndex: 0, kind: 'bypass-entry',
-          geom: { kind: 'polyline', points: route.entry.points },
+          geom: { kind: 'polyline', points: entry.points },
           color: generateHue(colorIdx++, totalSegs),
-          wStart: route.entry.widths[0] ?? 10, wEnd: route.entry.widths.at(-1) ?? 10,
-          widths: route.entry.widths, source: entrySource
+          wStart: entryWidth, wEnd: entryWidth,
+          widths: entry.widths, source: entrySource
         });
         resolved.push({
-          routeId: route.id, segIndex: 1, kind: 'bypass-curve',
-          geom: { kind: 'polyline', points: route.curve.points },
+          routeId: route.id, segIndex: 1, kind: 'bypass-entry-connector',
+          geom: route.entryConnector.arc,
           color: generateHue(colorIdx++, totalSegs),
-          wStart: route.curve.widths[0] ?? 10, wEnd: route.curve.widths.at(-1) ?? 10,
-          widths: route.curve.widths, source: entrySource
+          wStart: entryWidth, wEnd: route.lane.width,
+          radiusCenterRate: route.entryConnector.centerRate, source: entrySource
         });
         resolved.push({
-          routeId: route.id, segIndex: 2, kind: 'bypass-exit',
-          geom: { kind: 'polyline', points: route.exit.points },
+          routeId: route.id, segIndex: 2, kind: 'bypass-lane',
+          geom: route.lane.line,
           color: generateHue(colorIdx++, totalSegs),
-          wStart: route.exit.widths[0] ?? 10, wEnd: route.exit.widths.at(-1) ?? 10,
-          widths: route.exit.widths, source: exitSource
+          wStart: route.lane.width, wEnd: route.lane.width, source: entrySource
+        });
+        resolved.push({
+          routeId: route.id, segIndex: 3, kind: 'bypass-exit-connector',
+          geom: route.exitConnector.arc,
+          color: generateHue(colorIdx++, totalSegs),
+          wStart: route.lane.width, wEnd: exitWidth,
+          radiusCenterRate: route.exitConnector.centerRate, source: exitSource
+        });
+        resolved.push({
+          routeId: route.id, segIndex: 4, kind: 'bypass-exit',
+          geom: { kind: 'polyline', points: exit.points },
+          color: generateHue(colorIdx++, totalSegs),
+          wStart: exitWidth, wEnd: exitWidth,
+          widths: exit.widths, source: exitSource
         });
         break;
       }
