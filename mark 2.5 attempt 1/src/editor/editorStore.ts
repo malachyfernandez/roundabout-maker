@@ -18,6 +18,8 @@ export type Settings = {
   roadGuideShadowStrength: number;
   roadGuideShadowBlur: number;
   roadGuideShadowOffsetY: number;
+  ringLaneCollisionBuffer: number;
+  roadMarkingWidthScale: number;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -28,6 +30,8 @@ export const DEFAULT_SETTINGS: Settings = {
   roadGuideShadowStrength: 0.7,
   roadGuideShadowBlur: 2,
   roadGuideShadowOffsetY: 0,
+  ringLaneCollisionBuffer: 0,
+  roadMarkingWidthScale: 1,
 };
 
 export type Toast = {

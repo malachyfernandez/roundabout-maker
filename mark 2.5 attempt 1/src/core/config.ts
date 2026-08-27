@@ -17,6 +17,9 @@ export function validateConfig(config: RoundaboutConfig): string[] {
     }
     
     for (const lane of arm.lanesIn) {
+      if (lane.sourceRing && !ringIds.has(lane.sourceRing)) {
+        errors.push(`Arm ${arm.id} laneIn sources unknown ring ${lane.sourceRing}`);
+      }
       if (lane.targetsRing && !ringIds.has(lane.targetsRing)) {
         errors.push(`Arm ${arm.id} laneIn targets unknown ring ${lane.targetsRing}`);
       }
@@ -24,6 +27,9 @@ export function validateConfig(config: RoundaboutConfig): string[] {
     for (const lane of arm.lanesOut) {
       if (lane.sourceRing && !ringIds.has(lane.sourceRing)) {
         errors.push(`Arm ${arm.id} laneOut sources unknown ring ${lane.sourceRing}`);
+      }
+      if (lane.targetsRing && !ringIds.has(lane.targetsRing)) {
+        errors.push(`Arm ${arm.id} laneOut targets unknown ring ${lane.targetsRing}`);
       }
     }
   }

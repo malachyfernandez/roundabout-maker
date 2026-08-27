@@ -1,7 +1,8 @@
 import { type RingConfig, type RoundaboutConfig } from '../../config/types';
 import { type Vec2, dot, len, scale, sub } from '../../math/vector';
+import { laneFilletRadiusAtEndpoint, laneRoleAtEndpoint, type RoadEndpoint } from '../../core/routes';
 
-export function dragLaneFilletRadius(armId: string, dir: 'in' | 'out', laneIndex: number, centerRate: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+export function dragLaneFilletRadius(armId: string, dir: 'in' | 'out', laneIndex: number, endpoint: RoadEndpoint, centerRate: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
   const next = structuredClone(original);
   const arm = next.arms.find(candidate => candidate.id === armId);
   const source = original.arms.find(candidate => candidate.id === armId);
@@ -9,10 +10,12 @@ export function dragLaneFilletRadius(armId: string, dir: 'in' | 'out', laneIndex
   const lanes = dir === 'in' ? arm.lanesIn : arm.lanesOut;
   const sourceLanes = dir === 'in' ? source.lanesIn : source.lanesOut;
   if (!lanes[laneIndex] || !sourceLanes[laneIndex]) return next;
-  const radius = sourceLanes[laneIndex].filletRadius ?? 15;
+  const radius = laneFilletRadiusAtEndpoint(source, dir, laneIndex, endpoint);
   const rateSquared = dot(centerRate, centerRate);
   const radiusDelta = rateSquared > 1e-9 ? dot(delta, centerRate) / rateSquared : 0;
-  lanes[laneIndex].filletRadius = Math.max(5, Math.round((radius + radiusDelta) * 10) / 10);
+  const nextRadius = Math.max(5, Math.round((radius + radiusDelta) * 10) / 10);
+  if (laneRoleAtEndpoint(dir, endpoint) === 'entry') lanes[laneIndex].targetFilletRadius = nextRadius;
+  else lanes[laneIndex].sourceFilletRadius = nextRadius;
   return next;
 }
 

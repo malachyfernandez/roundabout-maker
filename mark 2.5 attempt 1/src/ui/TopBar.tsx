@@ -18,7 +18,7 @@ export const TopBar: React.FC = () => {
       </div>
       <button
         className="settings-button"
-        data-tooltip="Adjust zoom and pan sensitivity."
+        data-tooltip="Adjust interaction and road-marking settings."
         onClick={() => setSettingsOpen(true)}
       >
         <Settings size={16} />
@@ -143,6 +143,40 @@ export const TopBar: React.FC = () => {
                     onChange={e => setSettings({ roadGuideShadowOffsetY: Number(e.target.value) })}
                   />
                   <span className="settings-value">{settings.roadGuideShadowOffsetY.toFixed(1)}</span>
+                </div>
+              </label>
+              <label className="settings-row">
+                <div className="settings-label">
+                  <strong>Ring/lane collision buffer</strong>
+                  <small>Expand or contract only the lane footprint used to break ring lines</small>
+                </div>
+                <div className="settings-control">
+                  <input
+                    type="range"
+                    min="-5"
+                    max="5"
+                    step="0.1"
+                    value={settings.ringLaneCollisionBuffer}
+                    onChange={e => setSettings({ ringLaneCollisionBuffer: Number(e.target.value) })}
+                  />
+                  <span className="settings-value">{settings.ringLaneCollisionBuffer.toFixed(1)} ft</span>
+                </div>
+              </label>
+              <label className="settings-row">
+                <div className="settings-label">
+                  <strong>Road marking width</strong>
+                  <small>Scale the physical width of every painted line</small>
+                </div>
+                <div className="settings-control">
+                  <input
+                    type="range"
+                    min="0.25"
+                    max="3"
+                    step="0.05"
+                    value={settings.roadMarkingWidthScale}
+                    onChange={e => setSettings({ roadMarkingWidthScale: Number(e.target.value) })}
+                  />
+                  <span className="settings-value">{settings.roadMarkingWidthScale.toFixed(2)}×</span>
                 </div>
               </label>
             </div>

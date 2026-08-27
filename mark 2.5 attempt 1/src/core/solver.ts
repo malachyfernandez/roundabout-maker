@@ -14,6 +14,7 @@ export type ResolvedSegment = {
   wEnd: number;
   widths?: number[];
   radiusCenterRate?: Vec2;
+  endpoint?: 'start' | 'end';
   source: SelectionTarget;
 };
 
@@ -111,15 +112,15 @@ export function solveGeometry(
     const trimmed = trimInvisibleLaneEnds(atFillet.points, atFillet.widths);
     const width = trimmed.widths[0] ?? entryWidth(leg);
     const entryLineGeom = { kind: 'polyline' as const, points: trimmed.points };
-    const source: SelectionTarget = { kind: 'lane', armId: leg.armId, dir: 'in', laneIndex: leg.laneIdx };
+    const source: SelectionTarget = { kind: 'lane', armId: leg.armId, dir: leg.dir, laneIndex: leg.laneIdx };
 
     resolved.push({
       routeId, segIndex, kind: 'entry-line', geom: entryLineGeom,
-      color: generateHue(colorIdx++, totalSegs), wStart: width, wEnd: width, widths: trimmed.widths, source
+      color: generateHue(colorIdx++, totalSegs), wStart: width, wEnd: width, widths: trimmed.widths, endpoint: leg.endpoint, source
     });
     resolved.push({
       routeId, segIndex: segIndex + 1, kind: 'entry-fillet', geom: leg.fillet.arc,
-      color: generateHue(colorIdx++, totalSegs), wStart: width, wEnd: ringWidth, source
+      color: generateHue(colorIdx++, totalSegs), wStart: width, wEnd: ringWidth, endpoint: leg.endpoint, source
     });
   };
 
@@ -129,15 +130,15 @@ export function solveGeometry(
     const trimmed = trimInvisibleLaneEnds(atFillet.points, atFillet.widths);
     const width = trimmed.widths[0] ?? exitWidth(leg);
     const exitLineGeom = { kind: 'polyline' as const, points: trimmed.points };
-    const source: SelectionTarget = { kind: 'lane', armId: leg.armId, dir: 'out', laneIndex: leg.laneIdx };
+    const source: SelectionTarget = { kind: 'lane', armId: leg.armId, dir: leg.dir, laneIndex: leg.laneIdx };
 
     resolved.push({
       routeId, segIndex, kind: 'exit-fillet', geom: leg.fillet.arc,
-      color: generateHue(colorIdx++, totalSegs), wStart: ringWidth, wEnd: width, source
+      color: generateHue(colorIdx++, totalSegs), wStart: ringWidth, wEnd: width, endpoint: leg.endpoint, source
     });
     resolved.push({
       routeId, segIndex: segIndex + 1, kind: 'exit-line', geom: exitLineGeom,
-      color: generateHue(colorIdx++, totalSegs), wStart: width, wEnd: width, widths: trimmed.widths, source
+      color: generateHue(colorIdx++, totalSegs), wStart: width, wEnd: width, widths: trimmed.widths, endpoint: leg.endpoint, source
     });
   };
 

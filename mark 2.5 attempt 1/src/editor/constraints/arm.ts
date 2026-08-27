@@ -91,8 +91,8 @@ export function swapArmDirection(original: RoundaboutConfig, armId: string): Rou
   }
   // Swap lanesIn and lanesOut arrays (they reference rings from opposite perspectives).
   const lanesIn = arm.lanesIn;
-  arm.lanesIn = arm.lanesOut.map(lane => ({ targetsRing: lane.sourceRing, filletRadius: lane.filletRadius }));
-  arm.lanesOut = lanesIn.map(lane => ({ sourceRing: lane.targetsRing, filletRadius: lane.filletRadius, dropsRing: false }));
+  arm.lanesIn = arm.lanesOut.map(lane => ({ sourceRing: lane.sourceRing, targetsRing: lane.targetsRing, filletRadius: lane.filletRadius, sourceFilletRadius: lane.sourceFilletRadius, targetFilletRadius: lane.targetFilletRadius, dropsRing: lane.dropsRing }));
+  arm.lanesOut = lanesIn.map(lane => ({ sourceRing: lane.sourceRing, targetsRing: lane.targetsRing, filletRadius: lane.filletRadius, sourceFilletRadius: lane.sourceFilletRadius, targetFilletRadius: lane.targetFilletRadius, dropsRing: lane.dropsRing ?? false }));
   return next;
 }
 

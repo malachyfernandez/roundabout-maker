@@ -102,7 +102,16 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
         <h3 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           Ring: {ring.id}
           <button onClick={() => {
-            handleChange(c => c.rings.splice(i, 1));
+            handleChange(c => {
+              const ringId = c.rings[i].id;
+              c.rings.splice(i, 1);
+              for (const arm of c.arms) {
+                for (const lane of [...arm.lanesIn, ...arm.lanesOut]) {
+                  if (lane.sourceRing === ringId) delete lane.sourceRing;
+                  if (lane.targetsRing === ringId) delete lane.targetsRing;
+                }
+              }
+            });
             setSelection(null);
           }} style={{ color: 'red', border: 'none', background: 'none', cursor: 'pointer', fontSize: 18 }}>✕</button>
         </h3>
@@ -206,7 +215,15 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                   c.bypasses.forEach(connection => { if (connection.fromArmId === armId && connection.fromLaneIndex > li) connection.fromLaneIndex--; });
                 })} style={{ position: 'absolute', top: 2, right: 2, color: 'red', border: 'none', background: 'none', cursor: 'pointer' }}>✕</button>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 8px', alignItems: 'center', paddingRight: 16 }}>
-                  <span>Target:</span>
+                  <span>From ring:</span>
+                  <select value={lane.sourceRing ?? ''} onChange={e => handleChange(c => {
+                    if (e.target.value) c.arms[i].lanesIn[li].sourceRing = e.target.value;
+                    else delete c.arms[i].lanesIn[li].sourceRing;
+                  })}>
+                    <option value="">Automatic</option>
+                    {config.rings.map(r => <option key={r.id} value={r.id}>{r.id}</option>)}
+                  </select>
+                  <span>To ring:</span>
                   <select value={lane.targetsRing ?? ''} onChange={e => handleChange(c => {
                     if (e.target.value) c.arms[i].lanesIn[li].targetsRing = e.target.value;
                     else delete c.arms[i].lanesIn[li].targetsRing;
@@ -216,6 +233,8 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                   </select>
                   <span>Fillet R:</span>
                   <input type="number" value={lane.filletRadius} onChange={e => handleChange(c => c.arms[i].lanesIn[li].filletRadius = Number(e.target.value))} />
+                  <span>Drops source:</span>
+                  <input type="checkbox" checked={lane.dropsRing ?? false} onChange={e => handleChange(c => c.arms[i].lanesIn[li].dropsRing = e.target.checked)} />
                 </div>
                 <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px solid #dbe3ee' }}>
                     {bypass ? (
@@ -266,7 +285,7 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                   c.bypasses.forEach(connection => { if (connection.toArmId === armId && connection.toLaneIndex > li) connection.toLaneIndex--; });
                 })} style={{ position: 'absolute', top: 2, right: 2, color: 'red', border: 'none', background: 'none', cursor: 'pointer' }}>✕</button>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 8px', alignItems: 'center', paddingRight: 16 }}>
-                  <span>Source:</span>
+                  <span>From ring:</span>
                   <select value={lane.sourceRing ?? ''} onChange={e => handleChange(c => {
                     if (e.target.value) c.arms[i].lanesOut[li].sourceRing = e.target.value;
                     else delete c.arms[i].lanesOut[li].sourceRing;
@@ -274,9 +293,17 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
                     <option value="">Automatic</option>
                     {config.rings.map(r => <option key={r.id} value={r.id}>{r.id}</option>)}
                   </select>
+                  <span>To ring:</span>
+                  <select value={lane.targetsRing ?? ''} onChange={e => handleChange(c => {
+                    if (e.target.value) c.arms[i].lanesOut[li].targetsRing = e.target.value;
+                    else delete c.arms[i].lanesOut[li].targetsRing;
+                  })}>
+                    <option value="">Automatic</option>
+                    {config.rings.map(r => <option key={r.id} value={r.id}>{r.id}</option>)}
+                  </select>
                   <span>Fillet R:</span>
                   <input type="number" value={lane.filletRadius} onChange={e => handleChange(c => c.arms[i].lanesOut[li].filletRadius = Number(e.target.value))} />
-                  <span>Drops Ring:</span>
+                  <span>Drops source:</span>
                   <input type="checkbox" checked={lane.dropsRing} onChange={e => handleChange(c => c.arms[i].lanesOut[li].dropsRing = e.target.checked)} />
                 </div>
               </div>

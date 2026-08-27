@@ -273,7 +273,6 @@ export const LaneProfileLayer: React.FC<Props> = ({ zoom, onSmartZoom }) => {
         const dragging = state?.kind === 'transition' && state.dir === dir && state.laneIndex === transition.laneIndex && state.boundaryIndex === transition.boundaryIndex;
         const center = dragging && transitionDrag ? transitionDrag.point : home;
         const added = dir === 'out' ? transition.toPresent : transition.fromPresent;
-        const color = profileControlColor(transition.laneIndex);
         const targets = dragging ? profileTransitionTargets(profile, dir, transition.laneIndex, transition.boundaryIndex) : [];
         return (
           <g key={`${dir}-${transition.laneIndex}-transition-${transition.boundaryIndex}`}>
@@ -284,8 +283,7 @@ export const LaneProfileLayer: React.FC<Props> = ({ zoom, onSmartZoom }) => {
             })}
             {dragging && transitionDrag && len(sub(center, home)) > zoom && <line x1={home.x} y1={home.y} x2={center.x} y2={center.y} stroke="#7c3aed" strokeWidth={2 * zoom} strokeDasharray={`${5 * zoom} ${4 * zoom}`} strokeLinecap="round" opacity={transitionDrag.targetBoundary === null ? .55 : .9} pointerEvents="none" />}
             <g transform={`translate(${center.x} ${center.y})`} cursor="grab" onPointerDown={event => startTransitionDrag(event, dir, transition.laneIndex, transition.boundaryIndex)} onPointerMove={moveDrag} onPointerUp={finishDrag} onPointerCancel={finishDrag}>
-              <circle r={9 * zoom} fill="transparent" data-handle="true" data-tooltip={added ? 'Move lane start.' : 'Move lane end.'} />
-              <ProfileTransitionMarker added={added} color={color} scale={zoom} />
+              <ProfileTransitionMarker added={added} tooltip={added ? 'Move lane start.' : 'Move lane end.'} scale={zoom} />
             </g>
           </g>
         );

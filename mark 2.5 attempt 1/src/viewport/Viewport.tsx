@@ -338,20 +338,11 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         }
         if (len(sub(point, pendingRoadStart)) < 20) return;
         const armId = `road_${id}`;
-        // Order nodes so the one closest to any roundabout ring is nodes[0].
-        // The road direction is defined by node order: nodes[0] is the roundabout-facing end.
-        const distanceToRoundabout = (candidate: Vec2) => next.rings.length > 0
-          ? Math.min(...next.rings.map(ring => len(sub(candidate, ring.center))))
-          : len(sub(candidate, next.island.center));
-        const distStart = distanceToRoundabout(pendingRoadStart);
-        const distEnd = distanceToRoundabout(point);
-        const nearPoint = distStart <= distEnd ? pendingRoadStart : point;
-        const farPoint = distStart <= distEnd ? point : pendingRoadStart;
         next.arms.push({
           id: armId,
           nodes: [
-            { id: `${armId}_0`, point: nearPoint, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] },
-            { id: `${armId}_1`, point: farPoint, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] }
+            { id: `${armId}_0`, point: pendingRoadStart, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] },
+            { id: `${armId}_1`, point, medianWidth: 4, laneWidthsIn: [10], laneWidthsOut: [10] }
           ],
           lanesIn: [{ filletRadius: 40 }],
           lanesOut: [{ filletRadius: 40, dropsRing: false }]
@@ -450,7 +441,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         ref={svgRef}
         viewBox={`${vx} ${vy} ${width} ${height}`} 
         style={{ width: '100%', height: '100%', cursor: modalToolActive ? 'crosshair' : isDragging ? 'grabbing' : 'default', touchAction: 'none' }}
-        data-tooltip={activeTool === 'connect-bypass' ? 'Click a highlighted exit lane on another road to complete the right-turn bypass.' : activeTool === 'add-road' ? (pendingRoadStart ? 'Click to place the outer endpoint of the new road.' : 'Click to place the roundabout end of the new road.') : activeTool === 'add-ring' ? 'Click to place a new ring center.' : undefined}
+        data-tooltip={activeTool === 'connect-bypass' ? 'Click a highlighted exit lane on another road to complete the right-turn bypass.' : activeTool === 'add-road' ? (pendingRoadStart ? 'Click to place the second endpoint of the new road.' : 'Click to place the first endpoint of the new road.') : activeTool === 'add-ring' ? 'Click to place a new ring center.' : undefined}
         onPointerDownCapture={cancelViewAnimation}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -484,7 +475,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         )}
         <GeometryLayer config={draftConfig || committedConfig} segments={segments} zoom={zoom} />
         {viewMode !== 'segment' && (
-          <MarkingsLayer config={draftConfig || committedConfig} segments={segments} zoom={zoom} />
+          <MarkingsLayer config={draftConfig || committedConfig} segments={segments} />
         )}
         <CenterlineLayer config={draftConfig || committedConfig} zoom={zoom} />
         <LaneProfileLayer zoom={zoom} onSmartZoom={smartZoom} />
@@ -510,8 +501,10 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
               const next = structuredClone(committedConfig);
               next.rings = next.rings.filter(candidate => candidate.id !== selection.ringId);
               for (const arm of next.arms) {
-                for (const lane of arm.lanesIn) if (lane.targetsRing === selection.ringId) delete lane.targetsRing;
-                for (const lane of arm.lanesOut) if (lane.sourceRing === selection.ringId) delete lane.sourceRing;
+                for (const lane of [...arm.lanesIn, ...arm.lanesOut]) {
+                  if (lane.sourceRing === selection.ringId) delete lane.sourceRing;
+                  if (lane.targetsRing === selection.ringId) delete lane.targetsRing;
+                }
               }
               setCommittedConfig(next);
               setSelection(null);
@@ -587,7 +580,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
               defaultOffset={{ x: 24, y: -48 }}
               bounds={bounds}
               label="Swap Direction"
-              tooltip="Reverse which end connects to the roundabout."
+              tooltip="Reverse the road's lane travel directions."
               shortcut={{ key: 'S' }}
               icon={<ArrowLeftRight size={14} />}
               onClick={() => {
@@ -644,20 +637,21 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
           />
         );
       })()}
-      {selection?.kind === 'lane' && selection.dir === 'out' && svgRef.current && (() => {
+      {selection?.kind === 'lane' && svgRef.current && (() => {
         const svg = svgRef.current;
         const config = draftConfig || committedConfig;
         const arm = config.arms.find(a => a.id === selection.armId);
-        const lane = arm?.lanesOut[selection.laneIndex];
+        const lane = selection.dir === 'in' ? arm?.lanesIn[selection.laneIndex] : arm?.lanesOut[selection.laneIndex];
         if (!arm || !lane) return null;
-        const ring = resolveLaneRing(config, arm, 'out', selection.laneIndex);
+        const endpoint = selection.dir === 'in' ? 'end' : 'start';
+        const ring = resolveLaneRing(config, arm, selection.dir, selection.laneIndex, endpoint);
         if (!ring) return null;
         const rect = svg.getBoundingClientRect();
         const anchorPoint = worldToScreen(ring.center, svg);
         const bounds = { left: rect.left, top: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height };
         return (
           <FloatingButton
-            key={`${selection.armId}-out-${selection.laneIndex}-drops`}
+            key={`${selection.armId}-${selection.dir}-${selection.laneIndex}-drops`}
             storageKey="drops_ring"
             anchorPoint={anchorPoint}
             defaultOffset={{ x: 24, y: -24 }}
@@ -665,13 +659,12 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
             label="Drops Ring"
             tooltip="When checked, this exit lane drops the remainder of its source ring instead of continuing the circle."
             shortcut={{ key: 'D' }}
-            checked={lane.dropsRing}
+            checked={lane.dropsRing ?? false}
             onClick={() => {
               const next = structuredClone(committedConfig);
               const targetArm = next.arms.find(a => a.id === selection.armId);
-              if (targetArm?.lanesOut[selection.laneIndex]) {
-                targetArm.lanesOut[selection.laneIndex].dropsRing = !targetArm.lanesOut[selection.laneIndex].dropsRing;
-              }
+              const targetLane = selection.dir === 'in' ? targetArm?.lanesIn[selection.laneIndex] : targetArm?.lanesOut[selection.laneIndex];
+              if (targetLane) targetLane.dropsRing = !(targetLane.dropsRing ?? false);
               setCommittedConfig(next);
             }}
           />

@@ -230,7 +230,6 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
           const dragging = state?.kind === 'transition' && state.dir === dir && state.laneIndex === transition.laneIndex && state.boundaryIndex === transition.boundaryIndex;
           const center = dragging && transitionDrag ? transitionDrag : { ...home, sourceBoundary: transition.boundaryIndex, targetBoundary: null };
           const added = dir === 'out' ? transition.toPresent : transition.fromPresent;
-          const color = profileControlColor(transition.laneIndex);
           const targets = dragging ? profileTransitionTargets(profile, dir, transition.laneIndex, transition.boundaryIndex) : [];
           return (
             <g key={`${dir}-${transition.laneIndex}-transition-${transition.boundaryIndex}`}>
@@ -249,8 +248,7 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
                   startDrag(event, { kind: 'transition', dir, laneIndex: transition.laneIndex, boundaryIndex: transition.boundaryIndex });
                 }}
               >
-                <circle r="9" fill="transparent" data-handle="true" data-tooltip={added ? 'Move lane start.' : 'Move lane end.'} />
-                <ProfileTransitionMarker added={added} color={color} />
+                <ProfileTransitionMarker added={added} tooltip={added ? 'Move lane start.' : 'Move lane end.'} />
               </g>
             </g>
           );

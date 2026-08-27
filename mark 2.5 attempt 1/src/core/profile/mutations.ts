@@ -112,10 +112,10 @@ export function addProfileLane(original: RoundaboutConfig, armId: string, pointI
   const index = Math.max(0, Math.min(topology.length, insertIndex));
   if (dir === 'in') {
     const template = arm.lanesIn[Math.min(index, arm.lanesIn.length - 1)];
-    arm.lanesIn.splice(index, 0, { targetsRing: template?.targetsRing, filletRadius: template?.filletRadius ?? 40 });
+    arm.lanesIn.splice(index, 0, { sourceRing: template?.sourceRing, targetsRing: template?.targetsRing, filletRadius: template?.filletRadius ?? 40, sourceFilletRadius: template?.sourceFilletRadius, targetFilletRadius: template?.targetFilletRadius, dropsRing: false });
   } else {
     const template = arm.lanesOut[Math.min(index, arm.lanesOut.length - 1)];
-    arm.lanesOut.splice(index, 0, { sourceRing: template?.sourceRing, filletRadius: template?.filletRadius ?? 40, dropsRing: false });
+    arm.lanesOut.splice(index, 0, { sourceRing: template?.sourceRing, targetsRing: template?.targetsRing, filletRadius: template?.filletRadius ?? 40, sourceFilletRadius: template?.sourceFilletRadius, targetFilletRadius: template?.targetFilletRadius, dropsRing: false });
   }
   for (const point of arm.profile) {
     const lanes = dir === 'in' ? point.lanesIn : point.lanesOut;

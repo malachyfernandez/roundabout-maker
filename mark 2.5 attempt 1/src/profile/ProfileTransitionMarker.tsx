@@ -1,8 +1,14 @@
 import React from 'react';
+import startIcon from '../assets/iconstartend/start.svg';
+import endIcon from '../assets/iconstartend/end.svg';
 
-export const ProfileTransitionMarker: React.FC<{ added: boolean; color: string; scale?: number }> = ({ added, color, scale = 1 }) => (
+const REFERENCE_SCALE = 15 / 35;
+const ICON_WIDTH = 96 * REFERENCE_SCALE;
+const ICON_HEIGHT = 37 * REFERENCE_SCALE;
+
+export const ProfileTransitionMarker: React.FC<{ added: boolean; tooltip: string; scale?: number }> = ({ added, tooltip, scale = 1 }) => (
   <>
-    <path d={`M 0 ${-7.5 * scale} L ${7.5 * scale} 0 L 0 ${7.5 * scale} L ${-7.5 * scale} 0 Z`} fill="#fff" stroke={color} strokeWidth={1.5 * scale} strokeLinejoin="round" pointerEvents="none" />
-    <path d={added ? `M ${-2 * scale} 0 H ${2 * scale} M 0 ${-2 * scale} V ${2 * scale}` : `M ${-2 * scale} 0 H ${2 * scale}`} fill="none" stroke={color} strokeWidth={1.5 * scale} strokeLinecap="round" pointerEvents="none" />
+    <rect x={-ICON_WIDTH * scale / 2} y={-9 * scale} width={ICON_WIDTH * scale} height={18 * scale} fill="transparent" data-handle="true" data-tooltip={tooltip} />
+    <image href={added ? startIcon : endIcon} x={-ICON_WIDTH * scale / 2} y={-ICON_HEIGHT * scale / 2} width={ICON_WIDTH * scale} height={ICON_HEIGHT * scale} pointerEvents="none" />
   </>
 );

@@ -25,7 +25,7 @@ import { type ResolvedSegment } from '../core/solver';
 import { type Arc, type Line, arcPoint } from '../geometry/primitives';
 import { type RoundaboutConfig, type SelectionTarget } from '../config/types';
 import { connectBypassLanes, isValidBypassLanePair } from '../core/bypass';
-import { resolveLaneRing, solveBypassAttachmentPoints, solveLaneFillet } from '../core/routes';
+import { laneRoleAtEndpoint, resolveLaneRing, solveBypassAttachmentPoints, solveLaneFillet, type RoadEndpoint } from '../core/routes';
 
 type Props = {
   zoom: number;
@@ -46,11 +46,13 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
   const drag = useEditorStore(state => state.drag);
   const [dragVisualPoint, setDragVisualPoint] = React.useState<Vec2 | null>(null);
   const [activeMagnet, setActiveMagnet] = React.useState<ConnectionMagnet | null>(null);
+  const [activeEndpoint, setActiveEndpoint] = React.useState<RoadEndpoint | null>(null);
   const magnetRef = React.useRef<ConnectionMagnet | null>(null);
   const config = draftConfig || committedConfig;
-  const ringSnapPoints = React.useMemo(() => selection?.kind === 'lane'
-    ? getLaneRingSnapPoints(committedConfig, selection.armId, selection.dir, selection.laneIndex)
-    : [], [committedConfig, selection]);
+  const ringSnapPoints = React.useMemo(() => ({
+    start: selection?.kind === 'lane' ? getLaneRingSnapPoints(committedConfig, selection.armId, selection.dir, selection.laneIndex, 'start') : [],
+    end: selection?.kind === 'lane' ? getLaneRingSnapPoints(committedConfig, selection.armId, selection.dir, selection.laneIndex, 'end') : []
+  }), [committedConfig, selection]);
   const showIslandCenter = selection?.kind === 'island';
   const islandCenter = config.island.center ?? { x: 0, y: 0 };
   const activeArm = selection?.kind === 'arm' || selection?.kind === 'lane' || selection?.kind === 'profile-point'
@@ -59,13 +61,14 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
   const armDirectlySelected = selection?.kind === 'arm';
   const selectedRing = selection?.kind === 'ring' ? config.rings.find(ring => ring.id === selection.ringId) : null;
   const selectedLane = selection?.kind === 'lane' ? selection : null;
-  const filletSegment = selectedLane
-    ? segments.find(segment => segment.source.kind === 'lane'
+  const filletSegments = selectedLane ? Object.fromEntries((['start', 'end'] as const).map(endpoint => [endpoint,
+    segments.find(segment => segment.source.kind === 'lane'
       && segment.source.armId === selectedLane.armId
       && segment.source.dir === selectedLane.dir
       && segment.source.laneIndex === selectedLane.laneIndex
-      && segment.kind === (selectedLane.dir === 'in' ? 'entry-fillet' : 'exit-fillet'))
-    : null;
+      && segment.endpoint === endpoint
+      && segment.kind === `${laneRoleAtEndpoint(selectedLane.dir, endpoint)}-fillet`)
+  ])) as Record<RoadEndpoint, ResolvedSegment | undefined> : { start: undefined, end: undefined };
   const selectedBypass = selectedLane
     ? config.bypasses?.find(bypass => selectedLane.dir === 'in'
       ? bypass.fromArmId === selectedLane.armId && bypass.fromLaneIndex === selectedLane.laneIndex
@@ -117,34 +120,24 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
 
   if (viewMode === 'rendered') return null;
 
-  const laneRing = selectedLane && activeArm
-    ? resolveLaneRing(config, activeArm, selectedLane.dir, selectedLane.laneIndex)
-    : undefined;
-  const laneRingId = laneRing?.id;
-
-  // Compute the fillet arc endpoint that sits on the ring edge.
-  // This is where the lane connector meets the ring — the handle position.
-  let ringSnapPoint: { x: number; y: number } | null = null;
-  if (filletSegment?.geom.kind === 'arc' && laneRing) {
-    const arc = filletSegment.geom as Arc;
+  const laneRings = selectedLane && activeArm ? {
+    start: resolveLaneRing(config, activeArm, selectedLane.dir, selectedLane.laneIndex, 'start'),
+    end: resolveLaneRing(config, activeArm, selectedLane.dir, selectedLane.laneIndex, 'end')
+  } : { start: undefined, end: undefined };
+  const ringSnapPointsByEndpoint = Object.fromEntries((['start', 'end'] as const).map(endpoint => {
+    const ring = laneRings[endpoint];
+    const segment = filletSegments[endpoint];
+    if (!ring || segment?.geom.kind !== 'arc') return [endpoint, null];
+    const arc = segment.geom as Arc;
     const p0 = arcPoint(arc, arc.a0);
     const p1 = arcPoint(arc, arc.a1);
-    const d0 = len(sub(p0, laneRing.center));
-    const d1 = len(sub(p1, laneRing.center));
-    ringSnapPoint = d0 <= d1 ? p0 : p1;
-  } else if (laneRing) {
-    // Fallback: project the arm's near node onto the ring circumference
-    const nearNode = activeArm?.nodes[0];
-    if (nearNode) {
-      const dir = sub(nearNode.point, laneRing.center);
-      const d = len(dir);
-      ringSnapPoint = d > 0
-        ? { x: laneRing.center.x + dir.x / d * laneRing.radius, y: laneRing.center.y + dir.y / d * laneRing.radius }
-        : { x: laneRing.center.x + laneRing.radius, y: laneRing.center.y };
-    }
-  }
-
-  const connectionHome = bypassTargetPoint ?? ringSnapPoint;
+    return [endpoint, len(sub(p0, ring.center)) <= len(sub(p1, ring.center)) ? p0 : p1];
+  })) as Record<RoadEndpoint, Vec2 | null>;
+  const connectionHomes: Record<RoadEndpoint, Vec2 | null> = {
+    start: bypassTargetPoint ?? ringSnapPointsByEndpoint.start,
+    end: ringSnapPointsByEndpoint.end
+  };
+  const connectionHome = activeEndpoint ? connectionHomes[activeEndpoint] : null;
   const isRingSnapDragging = drag?.active && drag?.type === 'lane-ring-snap';
   const sameLane = (a: LaneTarget, b: LaneTarget) => a.armId === b.armId && a.dir === b.dir && a.laneIndex === b.laneIndex;
 
@@ -166,13 +159,14 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
         const otherLaneIndex = selectedLane!.dir === 'in' ? selectedBypass.toLaneIndex : selectedBypass.fromLaneIndex;
         return candidate.lane.armId === otherArmId && candidate.lane.dir === otherDir && candidate.lane.laneIndex === otherLaneIndex;
       }
-      if (!selectedBypass && laneRingId && candidate.kind === 'ring') return candidate.ringId === laneRingId;
+      const laneRingId = activeEndpoint ? laneRings[activeEndpoint]?.id : undefined;
+      if (laneRingId && candidate.kind === 'ring') return candidate.ringId === laneRingId;
       return false;
     };
 
     const candidates: ConnectionMagnet[] = [
-      ...ringSnapPoints.map(({ ringId, point }) => ({ kind: 'ring' as const, ringId, point })),
-      ...bypassSnapTargets,
+      ...(activeEndpoint ? ringSnapPoints[activeEndpoint] : []).map(({ ringId, point }) => ({ kind: 'ring' as const, ringId, point })),
+      ...(activeEndpoint === 'start' ? bypassSnapTargets : []),
     ].filter(candidate => !isCurrentTarget(candidate));
 
     // Stay snapped to current target while within capture radius
@@ -206,13 +200,16 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
   };
 
   const finishLaneRingSnap = (_delta: Vec2, original: RoundaboutConfig): RoundaboutConfig | null => {
-    if (!selectedLane) return null;
+    if (!selectedLane || !activeEndpoint) return null;
+    const endpoint = activeEndpoint;
     const magnet = magnetRef.current;
     clearDragFeedback();
+    setActiveEndpoint(null);
     if (!magnet) return null;
     if (magnet.kind === 'ring') {
-      return assignLaneRingTarget(selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, magnet.ringId, original);
+      return assignLaneRingTarget(selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, magnet.ringId, original, endpoint);
     }
+    if (endpoint !== 'start') return null;
     const existing = original.bypasses?.find(bypass => selectedLane.dir === 'in'
       ? bypass.fromArmId === selectedLane.armId && bypass.fromLaneIndex === selectedLane.laneIndex
       : bypass.toArmId === selectedLane.armId && bypass.toLaneIndex === selectedLane.laneIndex);
@@ -225,7 +222,7 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
   return (
     <g pointerEvents={selectionPassedThrough ? 'none' : undefined}>
       {/* When dragging the ring-snap handle, hide all other gizmos and show snap targets */}
-      {isRingSnapDragging && ringSnapPoints.map(({ ringId, point }) => {
+      {isRingSnapDragging && activeEndpoint && ringSnapPoints[activeEndpoint].map(({ ringId, point }) => {
         if (connectionHome && len(sub(point, connectionHome)) < zoom) return null;
         const isActive = activeMagnet?.kind === 'ring' && activeMagnet.ringId === ringId;
         return (
@@ -242,7 +239,7 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
           />
         );
       })}
-      {isRingSnapDragging && bypassSnapTargets.map(target => {
+      {isRingSnapDragging && activeEndpoint === 'start' && bypassSnapTargets.map(target => {
         if (connectionHome && len(sub(target.point, connectionHome)) < zoom) return null;
         const isActive = activeMagnet?.kind === 'lane' && sameLane(activeMagnet.lane, target.lane);
         return (
@@ -330,18 +327,25 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
             </>
           )}
 
-          {selectedLane && filletSegment?.geom.kind === 'arc' && laneRingId && (() => {
-            const arc = filletSegment.geom as Arc;
+          {selectedLane && (['start', 'end'] as const).map(endpoint => {
+            const segment = filletSegments[endpoint];
+            const ringId = laneRings[endpoint]?.id;
+            if (segment?.geom.kind !== 'arc' || !ringId) return null;
+            const arc = segment.geom as Arc;
             const angle = (arc.a0 + arc.a1) / 2;
-            const baseFillet = solveLaneFillet(committedConfig, selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, laneRingId);
+            const baseFillet = solveLaneFillet(committedConfig, selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, ringId, endpoint);
             const probe = structuredClone(committedConfig);
             const probeArm = probe.arms.find(arm => arm.id === selectedLane.armId);
             const probeLane = selectedLane.dir === 'in' ? probeArm?.lanesIn[selectedLane.laneIndex] : probeArm?.lanesOut[selectedLane.laneIndex];
-            if (probeLane) probeLane.filletRadius = (baseFillet?.arc.r ?? arc.r) + 1;
-            const probeFillet = solveLaneFillet(probe, selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, laneRingId);
+            if (probeLane) {
+              if (laneRoleAtEndpoint(selectedLane.dir, endpoint) === 'entry') probeLane.targetFilletRadius = (baseFillet?.arc.r ?? arc.r) + 1;
+              else probeLane.sourceFilletRadius = (baseFillet?.arc.r ?? arc.r) + 1;
+            }
+            const probeFillet = solveLaneFillet(probe, selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, ringId, endpoint);
             const centerRate = baseFillet && probeFillet ? sub(probeFillet.arc.c, baseFillet.arc.c) : fromAngle(angle);
             return (
               <RadiusGizmo
+                key={`lane-fillet-${endpoint}`}
                 center={arc.c}
                 radius={arc.r}
                 angle={angle}
@@ -350,10 +354,10 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
                 handleAtCenter
                 arc={arc}
                 tooltip="Drag the curve center to increase or decrease this lane's connector radius."
-                onDrag={(delta, original) => dragLaneFilletRadius(selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, centerRate, delta, original)}
+                onDrag={(delta, original) => dragLaneFilletRadius(selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, endpoint, centerRate, delta, original)}
               />
             );
-          })()}
+          })}
 
           {selectedBypass && bypassEntryConnector?.geom.kind === 'arc' && (() => {
             const arc = bypassEntryConnector.geom as Arc;
@@ -463,66 +467,53 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
             return handles;
           })}
 
-          {armDirectlySelected && activeArm && activeArm.nodes.map((node, index) => {
-            // Detect wrong-end condition: the far end (nodes[last]) is inside a ring
-            // while the near end (nodes[0]) is outside. This means the road direction
-            // is backwards and should be swapped.
-            const nearNode = activeArm.nodes[0];
-            const farNode = activeArm.nodes[activeArm.nodes.length - 1];
-            const isFarNode = index === activeArm.nodes.length - 1;
-            let errorTooltip: string | undefined;
-            if (isFarNode && activeArm.nodes.length >= 2 && config.rings.length > 0) {
-              const nearInside = config.rings.some(ring =>
-                len(sub(nearNode.point, ring.center)) <= ring.radius + ring.width / 2
-              );
-              const farInside = config.rings.some(ring =>
-                len(sub(farNode.point, ring.center)) <= ring.radius + ring.width / 2
-              );
-              if (farInside && !nearInside) {
-                errorTooltip = 'This end is inside the roundabout but it is the far end. Swap the road direction so this becomes the connecting end.';
-              }
-            }
-            return (
-              <Handle
-                key={node.id}
-                x={node.point.x}
-                y={node.point.y}
-                zoom={zoom}
-                cursor="move"
-                fill={errorTooltip ? '#fee2e2' : '#fff'}
-                stroke={errorTooltip ? '#dc2626' : '#2563eb'}
-                tooltip={activeArm.nodes.length > 2 ? 'Click to delete.' : 'Roads need at least two points.'}
-                errorTooltip={errorTooltip}
-                onDrag={(delta, original) => dragArmNode(activeArm.id, node.id, delta, original)}
-                onClick={activeArm.nodes.length > 2 ? original => removeArmNode(original, activeArm.id, node.id) : undefined}
-              />
-            );
-          })}
+          {armDirectlySelected && activeArm && activeArm.nodes.map(node => (
+            <Handle
+              key={node.id}
+              x={node.point.x}
+              y={node.point.y}
+              zoom={zoom}
+              cursor="move"
+              fill="#fff"
+              stroke="#2563eb"
+              tooltip={activeArm.nodes.length > 2 ? 'Click to delete.' : 'Roads need at least two points.'}
+              onDrag={(delta, original) => dragArmNode(activeArm.id, node.id, delta, original)}
+              onClick={activeArm.nodes.length > 2 ? original => removeArmNode(original, activeArm.id, node.id) : undefined}
+            />
+          ))}
         </>
       )}
-      {selectedLane && connectionHome && (
-        <Handle
-          key="lane-ring-snap-handle"
-          x={connectionHome.x}
-          y={connectionHome.y}
-          zoom={zoom}
-          radius={5}
-          fill="#f3e8ff"
-          stroke="#7c3aed"
-          dragType="lane-ring-snap"
-          followPointer
-          springDrag={Boolean(activeMagnet)}
-          resolveDragPosition={resolveConnectionDragPosition}
-          onDragStart={() => {
-            clearDragFeedback();
-            setDragVisualPoint(connectionHome);
-          }}
-          tooltip={`Drag this connection endpoint to a green ${selectedLane.dir === 'in' ? 'exit' : 'entry'} lane or ring target.`}
-          onDrag={(_, original) => original}
-          onDragEnd={finishLaneRingSnap}
-          onDragCancel={clearDragFeedback}
-        />
-      )}
+      {selectedLane && (['start', 'end'] as const).map(endpoint => {
+        const home = connectionHomes[endpoint];
+        if (!home) return null;
+        return (
+          <Handle
+            key={`lane-ring-snap-handle-${endpoint}`}
+            x={home.x}
+            y={home.y}
+            zoom={zoom}
+            radius={5}
+            fill="#f3e8ff"
+            stroke="#7c3aed"
+            dragType="lane-ring-snap"
+            followPointer
+            springDrag={Boolean(activeMagnet)}
+            resolveDragPosition={resolveConnectionDragPosition}
+            onDragStart={() => {
+              clearDragFeedback();
+              setActiveEndpoint(endpoint);
+              setDragVisualPoint(home);
+            }}
+            tooltip={`Drag this ${endpoint} connection to another intersected ring${endpoint === 'start' ? ' or compatible lane' : ''}.`}
+            onDrag={(_, original) => original}
+            onDragEnd={finishLaneRingSnap}
+            onDragCancel={() => {
+              clearDragFeedback();
+              setActiveEndpoint(null);
+            }}
+          />
+        );
+      })}
     </g>
   );
 };

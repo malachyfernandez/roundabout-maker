@@ -6,9 +6,13 @@ import { createRightTurnBypass } from './bypass';
 import { offsetSpline } from '../math/spline';
 import { laneOffsetAt, ringOuterEdgePathIndex, sampleProfile } from './profile';
 
+export type RoadEndpoint = 'start' | 'end';
+
 export type EntryLeg = {
   armId: string;
   laneIdx: number;
+  dir: 'in' | 'out';
+  endpoint: RoadEndpoint;
   line: Line;
   points: {x:number, y:number}[];
   widths: number[];
@@ -18,6 +22,8 @@ export type EntryLeg = {
 export type ExitLeg = {
   armId: string;
   laneIdx: number;
+  dir: 'in' | 'out';
+  endpoint: RoadEndpoint;
   line: Line;
   points: {x:number, y:number}[];
   widths: number[];
@@ -139,12 +145,12 @@ function solveFilletAlongPath(
   return null;
 }
 
-export function solveLaneFillet(config: RoundaboutConfig, armId: string, dir: 'in' | 'out', laneIndex: number, ringId: string): FilletSolution | null {
-  const arm = config.arms.find(candidate => candidate.id === armId);
-  const ring = config.rings.find(candidate => candidate.id === ringId);
-  const lane = dir === 'in' ? arm?.lanesIn[laneIndex] : arm?.lanesOut[laneIndex];
-  if (!arm || !ring || !lane || arm.nodes.length < 2) return null;
+function endpointPath<T>(values: T[], endpoint: RoadEndpoint): T[] {
+  const midpoint = Math.floor((values.length - 1) / 2);
+  return endpoint === 'start' ? values.slice(0, midpoint + 1) : values.slice(midpoint).reverse();
+}
 
+function lanePath(config: RoundaboutConfig, arm: ArmConfig, dir: 'in' | 'out', laneIndex: number) {
   const baseSpline = {
     points: arm.nodes.map(node => node.point),
     nodes: arm.nodes,
@@ -152,17 +158,58 @@ export function solveLaneFillet(config: RoundaboutConfig, armId: string, dir: 'i
     tension: 0
   };
   const profile = sampleProfile(arm, baseSpline, 90);
-  const isEntry = dir === 'in';
+  const laneIsIn = dir === 'in';
   const isRHD = config.circulation === 'ccw';
-  const offsets = profile.sections.map(section => laneOffsetAt(section, laneIndex, isEntry, isRHD));
-  const points = offsetSpline(baseSpline, offsets, 90);
-  const filletRadius = lane.filletRadius || 15;
+  const offsets = profile.sections.map(section => laneOffsetAt(section, laneIndex, laneIsIn, isRHD));
+  return {
+    points: offsetSpline(baseSpline, offsets, 90),
+    widths: profile.sections.map(section => laneIsIn ? section.lanesIn[laneIndex]?.width ?? 0 : section.lanesOut[laneIndex]?.width ?? 0)
+  };
+}
+
+export function laneRoleAtEndpoint(dir: 'in' | 'out', endpoint: RoadEndpoint): 'entry' | 'exit' {
+  return (dir === 'in') === (endpoint === 'start') ? 'entry' : 'exit';
+}
+
+export function laneRingIdAtEndpoint(arm: ArmConfig, dir: 'in' | 'out', laneIndex: number, endpoint: RoadEndpoint): string | undefined {
+  const lane = dir === 'in' ? arm.lanesIn[laneIndex] : arm.lanesOut[laneIndex];
+  return laneRoleAtEndpoint(dir, endpoint) === 'entry' ? lane?.targetsRing : lane?.sourceRing;
+}
+
+export function laneFilletRadiusAtEndpoint(arm: ArmConfig, dir: 'in' | 'out', laneIndex: number, endpoint: RoadEndpoint): number {
+  const lane = dir === 'in' ? arm.lanesIn[laneIndex] : arm.lanesOut[laneIndex];
+  return laneRoleAtEndpoint(dir, endpoint) === 'entry'
+    ? lane?.targetFilletRadius ?? lane?.filletRadius ?? 15
+    : lane?.sourceFilletRadius ?? lane?.filletRadius ?? 15;
+}
+
+export function laneIntersectsRingAtEndpoint(config: RoundaboutConfig, armId: string, dir: 'in' | 'out', laneIndex: number, ringId: string, endpoint: RoadEndpoint): boolean {
+  const arm = config.arms.find(candidate => candidate.id === armId);
+  const ring = config.rings.find(candidate => candidate.id === ringId);
+  if (!arm || !ring || arm.nodes.length < 2) return false;
+  const path = lanePath(config, arm, dir, laneIndex);
+  const points = endpointPath(path.points, endpoint);
+  const widths = endpointPath(path.widths, endpoint);
+  const outerRadius = ring.radius + ring.width / 2;
+  return points.some((point, index) => len(sub(point, ring.center)) <= outerRadius + (widths[index] ?? 0) / 2);
+}
+
+export function solveLaneFillet(config: RoundaboutConfig, armId: string, dir: 'in' | 'out', laneIndex: number, ringId: string, endpoint: RoadEndpoint = 'start'): FilletSolution | null {
+  const arm = config.arms.find(candidate => candidate.id === armId);
+  const ring = config.rings.find(candidate => candidate.id === ringId);
+  const lane = dir === 'in' ? arm?.lanesIn[laneIndex] : arm?.lanesOut[laneIndex];
+  if (!arm || !ring || !lane || arm.nodes.length < 2 || !laneIntersectsRingAtEndpoint(config, armId, dir, laneIndex, ringId, endpoint)) return null;
+
+  const points = endpointPath(lanePath(config, arm, dir, laneIndex).points, endpoint);
+  const isEntry = laneRoleAtEndpoint(dir, endpoint) === 'entry';
+  const isRHD = config.circulation === 'ccw';
+  const filletRadius = laneFilletRadiusAtEndpoint(arm, dir, laneIndex, endpoint);
   const turnDir = isRHD ? -1 : 1;
   return solveFilletAlongPath(points, ring.center, ring.radius, filletRadius, turnDir, isEntry, getCircDir(config.circulation))?.fillet ?? null;
 }
 
-export function solveLaneRingAttachmentPoint(config: RoundaboutConfig, armId: string, dir: 'in' | 'out', laneIndex: number, ringId: string): Vec2 | null {
-  return solveLaneFillet(config, armId, dir, laneIndex, ringId)?.tangentPointRing ?? null;
+export function solveLaneRingAttachmentPoint(config: RoundaboutConfig, armId: string, dir: 'in' | 'out', laneIndex: number, ringId: string, endpoint: RoadEndpoint = 'start'): Vec2 | null {
+  return solveLaneFillet(config, armId, dir, laneIndex, ringId, endpoint)?.tangentPointRing ?? null;
 }
 
 type BypassConnectorCandidate = {
@@ -239,17 +286,17 @@ function solveBestBypassPair(
   return null;
 }
 
-export function resolveLaneRing(config: RoundaboutConfig, arm: ArmConfig, dir: 'in' | 'out', laneIndex: number): RingConfig | undefined {
-  const connectingPoint = arm.nodes[0]?.point;
-  if (!connectingPoint) return undefined;
-  const assignedId = dir === 'in' ? arm.lanesIn[laneIndex]?.targetsRing : arm.lanesOut[laneIndex]?.sourceRing;
-  const containingRings = config.rings.filter(ring => len(sub(connectingPoint, ring.center)) <= ring.radius + ring.width / 2);
-  const assigned = containingRings.find(ring => ring.id === assignedId);
+export function resolveLaneRing(config: RoundaboutConfig, arm: ArmConfig, dir: 'in' | 'out', laneIndex: number, endpoint: RoadEndpoint = 'start'): RingConfig | undefined {
+  const endpointNode = endpoint === 'start' ? arm.nodes[0] : arm.nodes.at(-1);
+  if (!endpointNode) return undefined;
+  const assignedId = laneRingIdAtEndpoint(arm, dir, laneIndex, endpoint);
+  const intersectingRings = config.rings.filter(ring => laneIntersectsRingAtEndpoint(config, arm.id, dir, laneIndex, ring.id, endpoint));
+  const assigned = intersectingRings.find(ring => ring.id === assignedId);
   if (assigned) return assigned;
-  return containingRings.reduce<RingConfig | undefined>((closest, ring) => {
+  return intersectingRings.reduce<RingConfig | undefined>((closest, ring) => {
     if (!closest) return ring;
-    const distance = Math.abs(len(sub(connectingPoint, ring.center)) - ring.radius);
-    const closestDistance = Math.abs(len(sub(connectingPoint, closest.center)) - closest.radius);
+    const distance = Math.abs(len(sub(endpointNode.point, ring.center)) - ring.radius);
+    const closestDistance = Math.abs(len(sub(endpointNode.point, closest.center)) - closest.radius);
     return distance < closestDistance ? ring : closest;
   }, undefined);
 }
@@ -393,42 +440,14 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
   const bypassEntries = new Set((options.bypassEnabled ? config.bypasses ?? [] : []).map(bypass => `${bypass.fromArmId}_${bypass.fromLaneIndex}`));
   const bypassExits = new Set((options.bypassEnabled ? config.bypasses ?? [] : []).map(bypass => `${bypass.toArmId}_${bypass.toLaneIndex}`));
   const profileLaneRoutes: ProfileLaneRoute[] = [];
-  const profileLaneKeys = new Set<string>();
-  if (options.profileEnabled) {
-    for (const arm of config.arms) {
-      for (const dir of ['in', 'out'] as const) {
-        const laneCount = dir === 'in' ? arm.lanesIn.length : arm.lanesOut.length;
-        for (let laneIdx = 0; laneIdx < laneCount; laneIdx++) {
-          const key = `${arm.id}_${dir}_${laneIdx}`;
-          if ((dir === 'in' ? bypassEntries : bypassExits).has(`${arm.id}_${laneIdx}`)) continue;
-          const path = lanePaths.get(key);
-          if (!path) continue;
-          const ring = resolveLaneRing(config, arm, dir, laneIdx);
-          const ringIndex = ring ? ringOuterEdgePathIndex(path.points, ring) : 0;
-          if ((path.widths[ringIndex] ?? 0) >= .5) continue;
-          const firstVisible = path.widths.findIndex(width => width > .05);
-          if (firstVisible < 0) continue;
-          const start = Math.max(0, firstVisible - 1);
-          profileLaneKeys.add(key);
-          profileLaneRoutes.push({
-            kind: 'profile-lane',
-            id: `profile_${key}`,
-            armId: arm.id,
-            laneIdx,
-            dir,
-            points: path.points.slice(start),
-            widths: path.widths.slice(start)
-          });
-        }
-      }
-    }
-  }
 
   // 2. Solve fillets for all entry and exit lanes
   type CutPoint = {
     type: 'entry' | 'exit';
     armId: string;
     laneIdx: number;
+    dir: 'in' | 'out';
+    endpoint: RoadEndpoint;
     angle: number;
     fillet: FilletSolution;
     line: Line;
@@ -444,51 +463,56 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
   // Track which lanes successfully connected to a ring via fillet.
   // Lanes that don't connect will be rendered as standalone roads.
   const connectedLanes = new Set<string>();
-
-  // Resolve the connecting node (nodes[0], the roundabout-facing end) against
-  // every ring containing it, while retaining a valid explicit lane assignment.
-  // Lanes outside every ring are rendered as standalone roads.
-  const getResolvedRing = (arm: ArmConfig, dir: 'in' | 'out', laneIndex: number) => resolveLaneRing(config, arm, dir, laneIndex);
+  const connectedEndpoints = new Set<string>();
+  for (const bypass of options.bypassEnabled ? config.bypasses ?? [] : []) {
+    connectedEndpoints.add(`${bypass.fromArmId}_in_${bypass.fromLaneIndex}_start`);
+    connectedEndpoints.add(`${bypass.toArmId}_out_${bypass.toLaneIndex}_start`);
+  }
 
   for (const arm of config.arms) {
-    const connectingNode = arm.nodes[0]?.point;
-    if (!connectingNode) continue;
-
-    for (let i = 0; i < arm.lanesIn.length; i++) {
-      if (bypassEntries.has(`${arm.id}_${i}`) || profileLaneKeys.has(`${arm.id}_in_${i}`)) continue;
-      const lane = arm.lanesIn[i];
-      const ring = getResolvedRing(arm, 'in', i);
-      // Only attempt connection if the connecting node is within a ring's outer circle.
-      if (!ring) continue;
-      const path = lanePaths.get(`${arm.id}_in_${i}`)!;
-      if (!isPathVisible(path)) continue;
-      const rFillet = lane.filletRadius || 15;
-      const solved = solveFilletAlongPath(path.points, ring.center, ring.radius, rFillet, turnDir, true, circDir);
-      if (solved) {
-        connectedLanes.add(`${arm.id}_in_${i}`);
-        ringCuts.get(ring.id)!.push({
-          type: 'entry', armId: arm.id, laneIdx: i,
-          angle: solved.fillet.cutAngleRing, fillet: solved.fillet, line: solved.line, dropsRing: false,
-        });
+    for (const dir of ['in', 'out'] as const) {
+      const lanes = dir === 'in' ? arm.lanesIn : arm.lanesOut;
+      for (let laneIdx = 0; laneIdx < lanes.length; laneIdx++) {
+        const key = `${arm.id}_${dir}_${laneIdx}`;
+        const path = lanePaths.get(key);
+        if (!path || !isPathVisible(path)) continue;
+        for (const endpoint of ['start', 'end'] as const) {
+          if (endpoint === 'start' && (dir === 'in' ? bypassEntries : bypassExits).has(`${arm.id}_${laneIdx}`)) continue;
+          const ring = resolveLaneRing(config, arm, dir, laneIdx, endpoint);
+          if (!ring) continue;
+          const orientedPoints = endpointPath(path.points, endpoint);
+          const orientedWidths = endpointPath(path.widths, endpoint);
+          const ringIndex = ringOuterEdgePathIndex(orientedPoints, ring);
+          if ((orientedWidths[ringIndex] ?? 0) < .5) continue;
+          const role = laneRoleAtEndpoint(dir, endpoint);
+          const solved = solveFilletAlongPath(orientedPoints, ring.center, ring.radius, laneFilletRadiusAtEndpoint(arm, dir, laneIdx, endpoint), turnDir, role === 'entry', circDir);
+          if (!solved) continue;
+          connectedLanes.add(key);
+          connectedEndpoints.add(`${key}_${endpoint}`);
+          ringCuts.get(ring.id)!.push({
+            type: role,
+            armId: arm.id,
+            laneIdx,
+            dir,
+            endpoint,
+            angle: solved.fillet.cutAngleRing,
+            fillet: solved.fillet,
+            line: solved.line,
+            dropsRing: role === 'exit' ? lanes[laneIdx].dropsRing ?? false : false,
+          });
+        }
       }
     }
+  }
 
-    for (let i = 0; i < arm.lanesOut.length; i++) {
-      if (bypassExits.has(`${arm.id}_${i}`) || profileLaneKeys.has(`${arm.id}_out_${i}`)) continue;
-      const lane = arm.lanesOut[i];
-      const ring = getResolvedRing(arm, 'out', i);
-      if (!ring) continue;
-      const path = lanePaths.get(`${arm.id}_out_${i}`)!;
-      if (!isPathVisible(path)) continue;
-      const rFillet = lane.filletRadius || 15;
-      const solved = solveFilletAlongPath(path.points, ring.center, ring.radius, rFillet, turnDir, false, circDir);
-      if (solved) {
-        connectedLanes.add(`${arm.id}_out_${i}`);
-        ringCuts.get(ring.id)!.push({
-          type: 'exit', armId: arm.id, laneIdx: i,
-          angle: solved.fillet.cutAngleRing, fillet: solved.fillet, line: solved.line, dropsRing: lane.dropsRing,
-        });
-      }
+  for (const route of bypassRoutes) {
+    if (connectedEndpoints.has(`${route.entry.armId}_in_${route.entry.laneIdx}_end`)) {
+      route.entry.points = endpointPath(route.entry.points, 'start');
+      route.entry.widths = endpointPath(route.entry.widths, 'start');
+    }
+    if (connectedEndpoints.has(`${route.exit.armId}_out_${route.exit.laneIdx}_end`)) {
+      route.exit.points = endpointPath(route.exit.points, 'start');
+      route.exit.widths = endpointPath(route.exit.widths, 'start');
     }
   }
 
@@ -498,7 +522,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
   for (const arm of config.arms) {
     for (let i = 0; i < arm.lanesIn.length; i++) {
       const key = `${arm.id}_in_${i}`;
-      if (connectedLanes.has(key) || bypassEntries.has(`${arm.id}_${i}`) || profileLaneKeys.has(key)) continue;
+      if (connectedLanes.has(key) || bypassEntries.has(`${arm.id}_${i}`)) continue;
       const path = lanePaths.get(key);
       if (!path || !isPathVisible(path)) continue;
       standaloneRoadRoutes.push({
@@ -513,7 +537,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     }
     for (let i = 0; i < arm.lanesOut.length; i++) {
       const key = `${arm.id}_out_${i}`;
-      if (connectedLanes.has(key) || bypassExits.has(`${arm.id}_${i}`) || profileLaneKeys.has(key)) continue;
+      if (connectedLanes.has(key) || bypassExits.has(`${arm.id}_${i}`)) continue;
       const path = lanePaths.get(key);
       if (!path || !isPathVisible(path)) continue;
       standaloneRoadRoutes.push({
@@ -527,6 +551,16 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       });
     }
   }
+
+  const legForCut = (cut: CutPoint): EntryLeg | ExitLeg => {
+    const key = `${cut.armId}_${cut.dir}_${cut.laneIdx}`;
+    const path = lanePaths.get(key)!;
+    const opposite = cut.endpoint === 'start' ? 'end' : 'start';
+    const split = connectedEndpoints.has(`${key}_${opposite}`);
+    const points = split ? endpointPath(path.points, cut.endpoint) : cut.endpoint === 'start' ? path.points : [...path.points].reverse();
+    const widths = split ? endpointPath(path.widths, cut.endpoint) : cut.endpoint === 'start' ? path.widths : [...path.widths].reverse();
+    return { armId: cut.armId, laneIdx: cut.laneIdx, dir: cut.dir, endpoint: cut.endpoint, line: cut.line, fillet: cut.fillet, points, widths };
+  };
 
   // 3. Compile routes per ring using dropsRing logic
   const routes: RouteSymbolic[] = [...bypassRoutes, ...profileLaneRoutes, ...standaloneRoadRoutes];
@@ -549,17 +583,17 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       for (const entry of entries) {
         routes.push({
           kind: 'standalone-entry',
-          id: `entry_${entry.armId}-${entry.laneIdx}_${ringId}`,
+          id: `entry_${entry.armId}-${entry.dir}-${entry.laneIdx}-${entry.endpoint}_${ringId}`,
           ringId,
-          entry: { armId: entry.armId, laneIdx: entry.laneIdx, line: entry.line, fillet: entry.fillet, points: lanePaths.get(`${entry.armId}_in_${entry.laneIdx}`)!.points, widths: lanePaths.get(`${entry.armId}_in_${entry.laneIdx}`)!.widths },
+          entry: legForCut(entry) as EntryLeg,
         });
       }
       for (const exit of exits) {
         routes.push({
           kind: 'standalone-exit',
-          id: `exit_${exit.armId}-${exit.laneIdx}_${ringId}`,
+          id: `exit_${exit.armId}-${exit.dir}-${exit.laneIdx}-${exit.endpoint}_${ringId}`,
           ringId,
-          exit: { armId: exit.armId, laneIdx: exit.laneIdx, line: exit.line, fillet: exit.fillet, points: lanePaths.get(`${exit.armId}_out_${exit.laneIdx}`)!.points, widths: lanePaths.get(`${exit.armId}_out_${exit.laneIdx}`)!.widths },
+          exit: legForCut(exit) as ExitLeg,
         });
       }
       continue;
@@ -593,9 +627,9 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
         } else {
           routes.push({
             kind: 'standalone-entry',
-            id: `entry_${cut.armId}-${cut.laneIdx}_${ringId}`,
+            id: `entry_${cut.armId}-${cut.dir}-${cut.laneIdx}-${cut.endpoint}_${ringId}`,
             ringId,
-            entry: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_in_${cut.laneIdx}`)!.points, widths: lanePaths.get(`${cut.armId}_in_${cut.laneIdx}`)!.widths },
+            entry: legForCut(cut) as EntryLeg,
           });
         }
       } else if (cut.type === 'exit') {
@@ -603,27 +637,27 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
           if (currentThroughEntry) {
             routes.push({
               kind: 'through',
-              id: `route_${currentThroughEntry.armId}-${currentThroughEntry.laneIdx}_to_${cut.armId}-${cut.laneIdx}`,
+              id: `route_${currentThroughEntry.armId}-${currentThroughEntry.dir}-${currentThroughEntry.laneIdx}-${currentThroughEntry.endpoint}_to_${cut.armId}-${cut.dir}-${cut.laneIdx}-${cut.endpoint}`,
               ringId,
-              entry: { armId: currentThroughEntry.armId, laneIdx: currentThroughEntry.laneIdx, line: currentThroughEntry.line, fillet: currentThroughEntry.fillet, points: lanePaths.get(`${currentThroughEntry.armId}_in_${currentThroughEntry.laneIdx}`)!.points, widths: lanePaths.get(`${currentThroughEntry.armId}_in_${currentThroughEntry.laneIdx}`)!.widths },
+              entry: legForCut(currentThroughEntry) as EntryLeg,
               ringSpan: { a0: currentThroughEntry.angle, a1: cut.angle, dir: circDir },
-              exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points, widths: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.widths },
+              exit: legForCut(cut) as ExitLeg,
             });
             currentThroughEntry = null;
           } else {
             routes.push({
               kind: 'standalone-exit',
-              id: `exit_${cut.armId}-${cut.laneIdx}_${ringId}`,
+              id: `exit_${cut.armId}-${cut.dir}-${cut.laneIdx}-${cut.endpoint}_${ringId}`,
               ringId,
-              exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points, widths: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.widths },
+              exit: legForCut(cut) as ExitLeg,
             });
           }
         } else {
           routes.push({
             kind: 'standalone-exit',
-            id: `exit_${cut.armId}-${cut.laneIdx}_${ringId}`,
+            id: `exit_${cut.armId}-${cut.dir}-${cut.laneIdx}-${cut.endpoint}_${ringId}`,
             ringId,
-            exit: { armId: cut.armId, laneIdx: cut.laneIdx, line: cut.line, fillet: cut.fillet, points: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.points, widths: lanePaths.get(`${cut.armId}_out_${cut.laneIdx}`)!.widths },
+            exit: legForCut(cut) as ExitLeg,
           });
         }
       }

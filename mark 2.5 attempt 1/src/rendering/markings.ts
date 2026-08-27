@@ -8,7 +8,7 @@ export const MARKING_RULES = [
   'The lane beside a median receives a solid yellow inner edge line.',
   'The outside edge of each approach and exit receives a solid white edge line.',
   'Boundaries between lanes receive broken white lane-separator lines.',
-  'The circulatory pavement union creates its own inner and outer envelopes, independent of ring names or radial ordering.',
+  'Each ring stays independently outlined in white while each connected ring set receives one yellow central envelope.',
   'Every entering lane receives yield teeth immediately before its connector reaches the first live ring; exits never receive yield markings.',
   'Entry arrows point toward the roundabout, exit arrows point away, and ring arrows follow circulation.',
   'Yield markings render above arrows, edges, and separators because they communicate priority.'
@@ -66,6 +66,10 @@ function offsetEdge(segment: ResolvedSegment, factor: number) {
   return points.map((point, index) => add(point, scale(normalAt(points, index), widthAt(segment, index, points.length) * factor)));
 }
 
+function pathLength(points: Vec2[]) {
+  return points.reduce((total, point, index) => index === 0 ? 0 : total + len(sub(point, points[index - 1])), 0);
+}
+
 function pointAtDistance(points: Vec2[], distance: number) {
   if (points.length < 2) return { point: points[0] ?? { x: 0, y: 0 }, tangent: { x: 1, y: 0 } };
   let remaining = distance;
@@ -115,49 +119,26 @@ function yieldTeeth(point: Vec2, travel: Vec2, laneWidth: number, id: string): F
   });
 }
 
-type RadialInterval = { start: number; end: number; ringId: string };
-
-function rayCircleRoots(origin: Vec2, direction: Vec2, center: Vec2, radius: number) {
-  const relative = sub(origin, center);
-  const b = 2 * dot(relative, direction);
-  const c = dot(relative, relative) - radius * radius;
-  const discriminant = b * b - 4 * c;
-  if (discriminant < 0) return [];
-  const root = Math.sqrt(discriminant);
-  return [(-b - root) / 2, (-b + root) / 2].filter(value => value > 0);
-}
-
-function radialIntervalsForArc(origin: Vec2, direction: Vec2, arc: Arc, width: number, ringId: string): RadialInterval[] {
-  const innerRadius = Math.max(.01, arc.r - width / 2);
-  const outerRadius = arc.r + width / 2;
-  const roots = [0, ...rayCircleRoots(origin, direction, arc.c, innerRadius), ...rayCircleRoots(origin, direction, arc.c, outerRadius)]
-    .sort((a, b) => a - b);
-  const maxRoot = roots.at(-1) ?? 0;
-  roots.push(maxRoot + outerRadius * .1 + 1);
-  const intervals: RadialInterval[] = [];
-  for (let index = 0; index < roots.length - 1; index++) {
-    const start = roots[index];
-    const end = roots[index + 1];
-    const midpoint = add(origin, scale(direction, (start + end) / 2));
-    const radial = sub(midpoint, arc.c);
-    const distance = len(radial);
-    if (distance < innerRadius - 1e-5 || distance > outerRadius + 1e-5 || !arcContainsAngle(arc, angleOf(radial))) continue;
-    intervals.push({ start, end, ringId });
+function pointInsideSegment(point: Vec2, segment: ResolvedSegment, collisionBuffer: number) {
+  const points = segmentPoints(segment);
+  for (let index = 0; index < points.length - 1; index++) {
+    const edge = sub(points[index + 1], points[index]);
+    const edgeLengthSquared = dot(edge, edge);
+    if (edgeLengthSquared < 1e-9) continue;
+    const t = Math.max(0, Math.min(1, dot(sub(point, points[index]), edge) / edgeLengthSquared));
+    const projected = add(points[index], scale(edge, t));
+    const startWidth = widthAt(segment, index, points.length);
+    const endWidth = widthAt(segment, index + 1, points.length);
+    if (len(sub(point, projected)) <= Math.max(0, (startWidth + (endWidth - startWidth) * t) / 2 + collisionBuffer)) return true;
   }
-  return intervals;
-}
-
-function angularDistance(a: number, b: number) {
-  let difference = Math.abs(a - b) % (Math.PI * 2);
-  if (difference > Math.PI) difference = Math.PI * 2 - difference;
-  return difference;
+  return false;
 }
 
 function pushPointRuns(markings: Marking[], values: ({ point: Vec2; status: 'solid' | 'dashed' | 'gap' } | null)[], baseId: string, rule: string, color: string, width: number, priority: number) {
   let run: Vec2[] = [];
   let status: 'solid' | 'dashed' | 'gap' = 'gap';
   const flush = () => {
-    if (run.length > 1 && status !== 'gap') markings.push({ kind: 'stroke', id: `${baseId}_${markings.length}`, rule, points: run, color, width, dash: status === 'dashed' ? '3 3' : undefined, priority });
+    if (run.length > 1 && status !== 'gap') markings.push({ kind: 'stroke', id: `${baseId}_${markings.length}`, rule, points: run, color, width, dash: status === 'dashed' ? '5 5' : undefined, priority });
     run = [];
   };
   for (const value of values) {
@@ -170,81 +151,109 @@ function pushPointRuns(markings: Marking[], values: ({ point: Vec2; status: 'sol
   flush();
 }
 
-function buildRingEnvelopeMarkings(segments: ResolvedSegment[]) {
-  const markings: Marking[] = [];
-  const ringSegments = segments.filter(segment => segment.kind === 'ring-arc' && segment.source.kind === 'ring' && segment.geom.kind === 'arc');
-  const centralArcSegments = segments.filter(segment => (segment.kind === 'ring-arc' || segment.kind === 'entry-fillet' || segment.kind === 'exit-fillet') && segment.geom.kind === 'arc');
-  if (ringSegments.length === 0) return markings;
-  const origin = { x: 0, y: 0 };
-  const sampleCount = 720;
-  const entryWindows = segments.filter(segment => segment.kind === 'entry-fillet' && segment.geom.kind === 'arc').map(segment => {
-    const arc = segment.geom as Arc;
-    const setback = Math.min(segment.wEnd / 2 / Math.max(arc.r, 1), Math.abs(arc.a1 - arc.a0) * .4);
-    const point = arcPoint(arc, arc.a1 - arc.dir * setback);
-    const radius = len(sub(point, origin));
-    return { angle: angleOf(sub(point, origin)), halfWidth: Math.max(.025, segment.wEnd / Math.max(radius, 1) * .65) };
-  });
-  const exitWindows = segments.filter(segment => segment.kind === 'exit-fillet' && segment.geom.kind === 'arc').map(segment => {
-    const arc = segment.geom as Arc;
-    const advance = Math.min(segment.wStart / 2 / Math.max(arc.r, 1), Math.abs(arc.a1 - arc.a0) * .4);
-    const point = arcPoint(arc, arc.a0 + arc.dir * advance);
-    const radius = len(sub(point, origin));
-    return { angle: angleOf(sub(point, origin)), halfWidth: Math.max(.025, segment.wStart / Math.max(radius, 1) * .6) };
-  });
-  const outer: ({ point: Vec2; status: 'solid' | 'dashed' | 'gap' } | null)[] = [];
-  const inner: ({ point: Vec2; status: 'solid' | 'dashed' | 'gap' } | null)[] = [];
-  const separators: ({ point: Vec2; status: 'solid' | 'dashed' | 'gap' } | null)[][] = [];
+type RingSegment = ResolvedSegment & { geom: Arc; source: { kind: 'ring'; ringId: string } };
 
-  for (let index = 0; index <= sampleCount; index++) {
-    const angle = index / sampleCount * Math.PI * 2;
-    const direction = { x: Math.cos(angle), y: Math.sin(angle) };
-    const byRing = new Map<string, RadialInterval>();
-    for (const segment of ringSegments) {
-      if (segment.source.kind !== 'ring' || segment.geom.kind !== 'arc') continue;
-      const intervals = radialIntervalsForArc(origin, direction, segment.geom as Arc, segment.wStart, segment.source.ringId);
-      for (const interval of intervals) {
-        const existing = byRing.get(interval.ringId);
-        if (!existing) byRing.set(interval.ringId, interval);
-        else byRing.set(interval.ringId, { ...existing, start: Math.min(existing.start, interval.start), end: Math.max(existing.end, interval.end) });
+type RadialInterval = { start: number; end: number };
+
+function rayCircleRoots(origin: Vec2, direction: Vec2, center: Vec2, radius: number) {
+  const relative = sub(origin, center);
+  const b = 2 * dot(relative, direction);
+  const c = dot(relative, relative) - radius * radius;
+  const discriminant = b * b - 4 * c;
+  if (discriminant < 0) return [];
+  const root = Math.sqrt(discriminant);
+  return [(-b - root) / 2, (-b + root) / 2].filter(value => value >= 0);
+}
+
+function radialIntervals(origin: Vec2, direction: Vec2, segment: RingSegment): RadialInterval[] {
+  const innerRadius = Math.max(.01, segment.geom.r - segment.wStart / 2);
+  const outerRadius = segment.geom.r + segment.wStart / 2;
+  const roots = [0, ...rayCircleRoots(origin, direction, segment.geom.c, innerRadius), ...rayCircleRoots(origin, direction, segment.geom.c, outerRadius)].sort((a, b) => a - b);
+  roots.push((roots.at(-1) ?? 0) + outerRadius * .1 + 1);
+  const intervals: RadialInterval[] = [];
+  for (let index = 0; index < roots.length - 1; index++) {
+    const start = roots[index];
+    const end = roots[index + 1];
+    const midpoint = add(origin, scale(direction, (start + end) / 2));
+    const radial = sub(midpoint, segment.geom.c);
+    const distance = len(radial);
+    if (distance >= innerRadius - 1e-5 && distance <= outerRadius + 1e-5 && arcContainsAngle(segment.geom, angleOf(radial))) intervals.push({ start, end });
+  }
+  return intervals;
+}
+
+function ringComponents(segments: RingSegment[]) {
+  const representatives = [...new Map(segments.map(segment => [segment.source.ringId, segment])).values()];
+  const touches = (a: RingSegment, b: RingSegment) => {
+    const distance = len(sub(a.geom.c, b.geom.c));
+    const innerA = Math.max(0, a.geom.r - a.wStart / 2);
+    const innerB = Math.max(0, b.geom.r - b.wStart / 2);
+    const outerA = a.geom.r + a.wStart / 2;
+    const outerB = b.geom.r + b.wStart / 2;
+    return distance <= outerA + outerB && distance + Math.min(outerA, outerB) >= Math.max(innerA, innerB);
+  };
+  const remaining = new Set(representatives);
+  const components: RingSegment[][] = [];
+  while (remaining.size > 0) {
+    const first = remaining.values().next().value as RingSegment;
+    remaining.delete(first);
+    const component = [first];
+    for (let index = 0; index < component.length; index++) {
+      for (const candidate of [...remaining]) {
+        if (!touches(component[index], candidate)) continue;
+        remaining.delete(candidate);
+        component.push(candidate);
       }
     }
-    const intervals = [...byRing.values()].sort((a, b) => (a.start + a.end) - (b.start + b.end));
-    const centralIntervals = centralArcSegments.flatMap(segment => radialIntervalsForArc(
-      origin,
-      direction,
-      segment.geom as Arc,
-      Math.max(segment.wStart, segment.wEnd),
-      `${segment.routeId}_${segment.segIndex}`
-    ));
-    const innerRadius = centralIntervals.length > 0 ? Math.min(...centralIntervals.map(interval => interval.start)) : null;
-    if (intervals.length === 0) {
-      outer.push(null);
-      inner.push(innerRadius === null ? null : { point: add(origin, scale(direction, innerRadius)), status: 'solid' });
-      separators.forEach(points => points.push(null));
-      continue;
-    }
-    const outerRadius = Math.max(...intervals.map(interval => interval.end));
-    const entry = entryWindows.some(window => angularDistance(angle, window.angle) <= window.halfWidth);
-    const exit = exitWindows.some(window => angularDistance(angle, window.angle) <= window.halfWidth);
-    outer.push({ point: add(origin, scale(direction, outerRadius)), status: entry ? 'dashed' : exit ? 'gap' : 'solid' });
-    inner.push(innerRadius === null ? null : { point: add(origin, scale(direction, innerRadius)), status: 'solid' });
-    const boundaryCount = Math.max(0, intervals.length - 1);
-    while (separators.length < boundaryCount) separators.push(Array(index).fill(null));
-    for (let boundary = 0; boundary < separators.length; boundary++) {
-      if (boundary < boundaryCount) {
-        const radius = (intervals[boundary].end + intervals[boundary + 1].start) / 2;
-        separators[boundary].push({ point: add(origin, scale(direction, radius)), status: 'dashed' });
-      } else separators[boundary].push(null);
-    }
+    const ids = new Set(component.map(segment => segment.source.ringId));
+    components.push(segments.filter(segment => ids.has(segment.source.ringId)));
   }
+  return components;
+}
 
-  pushPointRuns(markings, outer, 'circulatory_outer', 'The outer envelope of all live circulatory pavement is solid white, dashed at entries, and open at exits.', '#f8fafc', .8, 28);
-  pushPointRuns(markings, inner, 'central_shape', 'The innermost envelope of all live circulatory pavement forms the central shape and receives a solid yellow line.', '#facc15', .8, 29);
-  separators.forEach((points, index) => pushPointRuns(markings, points, `turbo_separator_${index}`, 'Adjacent live circulatory lanes create a dashed separator that follows their changing radial order.', '#f8fafc', .6, 22));
+function buildRingEnvelopeMarkings(segments: ResolvedSegment[], collisionBuffer: number) {
+  const markings: Marking[] = [];
+  const ringSegments = segments.filter((segment): segment is RingSegment => segment.kind === 'ring-arc' && segment.source.kind === 'ring' && segment.geom.kind === 'arc');
+  const roadSegments = segments.filter(segment => segment.source.kind === 'lane');
+  for (const segment of ringSegments) {
+    const centerline = segmentPoints(segment);
+    const values = (factor: number) => centerline.map((point, index) => {
+      const edgePoint = add(point, scale(norm(sub(point, segment.geom.c)), widthAt(segment, index, centerline.length) * factor));
+      return {
+        point: edgePoint,
+        status: roadSegments.some(road => pointInsideSegment(edgePoint, road, collisionBuffer)) ? 'dashed' as const : 'solid' as const
+      };
+    });
+    const id = `${segment.source.ringId}_${segment.routeId}_${segment.segIndex}`;
+    pushPointRuns(markings, values(.5), `${id}_outer`, 'Each ring receives an independent white outer edge, dashed only where connector pavement intersects it.', '#f8fafc', .8, 28);
+    pushPointRuns(markings, values(-.5), `${id}_inner`, 'Each non-central ring edge remains white.', '#f8fafc', .8, 28);
+  }
+  ringComponents(ringSegments).forEach((component, componentIndex) => {
+    const representatives = [...new Map(component.map(segment => [segment.source.ringId, segment])).values()];
+    const center = scale(representatives.reduce((sum, segment) => add(sum, segment.geom.c), { x: 0, y: 0 }), 1 / representatives.length);
+    const values = Array.from({ length: 361 }, (_, index) => {
+      const angle = index / 360 * Math.PI * 2;
+      const direction = { x: Math.cos(angle), y: Math.sin(angle) };
+      const intervals = component.flatMap(segment => radialIntervals(center, direction, segment)).filter(interval => interval.end > 1e-5);
+      if (intervals.length === 0) return null;
+      const nearest = intervals.reduce((best, interval) => interval.start < best.start ? interval : best);
+      if (nearest.start <= 1e-5) return null;
+      const point = add(center, scale(direction, nearest.start));
+      return {
+        point,
+        status: roadSegments.some(road => pointInsideSegment(point, road, collisionBuffer)) ? 'dashed' as const : 'solid' as const
+      };
+    });
+    pushPointRuns(markings, values, `central_component_${componentIndex}`, 'The contiguous inner envelope of each connected ring set receives the yellow central line.', '#facc15', .8, 29);
+  });
   return markings;
 }
 
-export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegment[]): Marking[] {
+export type MarkingOptions = {
+  ringLaneCollisionBuffer?: number;
+};
+
+export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegment[], options: MarkingOptions = {}): Marking[] {
   const markings: Marking[] = [];
   const isRHD = config.circulation === 'ccw';
   const roadSegments = segments.filter(segment => segment.source.kind === 'lane');
@@ -262,7 +271,7 @@ export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegmen
     if (roadKind) {
       const entry = roadKind === 'entry';
       const sideSign = isRHD ? (entry ? 1 : -1) : (entry ? -1 : 1);
-      const laneCount = entry ? arm.lanesIn.length : arm.lanesOut.length;
+      const laneCount = source.dir === 'in' ? arm.lanesIn.length : arm.lanesOut.length;
       const inner = offsetEdge(segment, -sideSign / 2);
       const outer = offsetEdge(segment, sideSign / 2);
       if (source.laneIndex === 0) {
@@ -274,9 +283,12 @@ export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegmen
         markings.push({ kind: 'stroke', id: `${segment.routeId}_${segment.segIndex}_edge`, rule: MARKING_RULES[2], points: outer, color: '#f8fafc', width: .75, priority: 24 });
       }
       const points = segmentPoints(segment);
-      const arrow = pointAtDistance(points, Math.min(28, Math.max(8, points.length * 1.5)));
-      const travel = entry ? scale(arrow.tangent, -1) : arrow.tangent;
-      markings.push({ kind: 'fill', id: `${segment.routeId}_${segment.segIndex}_arrow`, rule: MARKING_RULES[6], points: arrowShape(arrow.point, travel), color: '#f8fafc', priority: 35 });
+      const availableLength = pathLength(points);
+      if (availableLength >= 14) {
+        const arrow = pointAtDistance(points, Math.min(28, availableLength / 2));
+        const travel = entry ? scale(arrow.tangent, -1) : arrow.tangent;
+        markings.push({ kind: 'fill', id: `${segment.routeId}_${segment.segIndex}_arrow`, rule: MARKING_RULES[6], points: arrowShape(arrow.point, travel), color: '#f8fafc', priority: 35 });
+      }
     } else if (segment.kind === 'entry-fillet' && segment.geom.kind === 'arc') {
       const arc = segment.geom as Arc;
       const setbackAngle = Math.min((segment.wEnd / 2 + 1.5) / Math.max(arc.r, 1), Math.abs(arc.a1 - arc.a0) * .45);
@@ -287,16 +299,20 @@ export function buildMarkings(config: RoundaboutConfig, segments: ResolvedSegmen
       markings.push({ kind: 'stroke', id: `${segment.routeId}_${segment.segIndex}_right`, rule: MARKING_RULES[2], points: offsetEdge(segment, .5), color: '#f8fafc', width: .7, priority: 24 });
       if (segment.kind === 'bypass-lane') {
         const points = segmentPoints(segment);
-        const arrow = pointAtDistance(points, Math.max(6, points.reduce((sum, point, index) => index ? sum + len(sub(point, points[index - 1])) : sum, 0) / 2));
-        markings.push({ kind: 'fill', id: `${segment.routeId}_lane_arrow`, rule: MARKING_RULES[6], points: arrowShape(arrow.point, arrow.tangent, 6), color: '#f8fafc', priority: 35 });
+        const availableLength = pathLength(points);
+        if (availableLength >= 12) {
+          const arrow = pointAtDistance(points, availableLength / 2);
+          markings.push({ kind: 'fill', id: `${segment.routeId}_lane_arrow`, rule: MARKING_RULES[6], points: arrowShape(arrow.point, arrow.tangent, 6), color: '#f8fafc', priority: 35 });
+        }
       }
     }
   }
 
-  markings.push(...buildRingEnvelopeMarkings(segments));
+  markings.push(...buildRingEnvelopeMarkings(segments, options.ringLaneCollisionBuffer ?? 0));
   const ringSegments = segments.filter(segment => segment.kind === 'ring-arc' && segment.geom.kind === 'arc');
   for (const segment of ringSegments) {
     const arc = segment.geom as Arc;
+    if (Math.abs(arc.a1 - arc.a0) * arc.r < 12) continue;
     const angle = (arc.a0 + arc.a1) / 2;
     markings.push({ kind: 'fill', id: `${segment.routeId}_ring_arrow`, rule: MARKING_RULES[6], points: arrowShape(arcPoint(arc, angle), arcTangent(arc, angle), 6), color: '#f8fafc', priority: 35 });
   }

@@ -42,10 +42,17 @@ export function createRightTurnBypass(config: RoundaboutConfig, entry: LaneTarge
   const entryWidth = Math.max(10, ...entryArm.nodes.map(node => node.laneWidthsIn[entry.laneIndex] ?? 0), ...(entryArm.profile ?? []).map(point => point.lanesIn[entry.laneIndex]?.width ?? 0));
   const exitWidth = Math.max(10, ...exitArm.nodes.map(node => node.laneWidthsOut[exit.laneIndex] ?? 0), ...(exitArm.profile ?? []).map(point => point.lanesOut[exit.laneIndex]?.width ?? 0));
   const laneHalfWidth = Math.max(entryWidth, exitWidth) / 2;
-  const clearance = config.rings.reduce((offset, ring) => Math.max(
+  const endpoints = [entryArm.nodes[0].point, exitArm.nodes[0].point];
+  const localRings = config.rings.filter(ring => endpoints.some(point => {
+    const dx = point.x - ring.center.x;
+    const dy = point.y - ring.center.y;
+    return Math.hypot(dx, dy) <= ring.radius + ring.width / 2 + laneHalfWidth;
+  }));
+  const endpointClearance = Math.max(...endpoints.map(point => dot(point, outwardNormal))) + 40;
+  const clearance = localRings.reduce((offset, ring) => Math.max(
     offset,
     dot(ring.center, outwardNormal) + ring.radius + ring.width / 2 + laneHalfWidth + 2
-  ), dot(config.island.center, outwardNormal) + 40);
+  ), endpointClearance);
   return {
     id,
     fromArmId: entry.armId,

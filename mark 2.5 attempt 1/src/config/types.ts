@@ -8,13 +8,20 @@ export type RingConfig = {
 };
 
 export type LaneIn = {
+  sourceRing?: string;
   targetsRing?: string;
   filletRadius?: number;
+  sourceFilletRadius?: number;
+  targetFilletRadius?: number;
+  dropsRing?: boolean;
 };
 
 export type LaneOut = {
   sourceRing?: string;
+  targetsRing?: string;
   filletRadius?: number;
+  sourceFilletRadius?: number;
+  targetFilletRadius?: number;
   dropsRing: boolean;
 };
 
