@@ -376,6 +376,7 @@ button:disabled {
 
 .floating-button-shortcut {
   min-width: 20px;
+  box-sizing: border-box;
   padding: 2px 5px;
   color: #475569;
   background: #f8fafc;
@@ -385,6 +386,10 @@ button:disabled {
   font: 700 9px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   text-align: center;
   pointer-events: none;
+}
+
+.floating-button-shortcut.wide {
+  min-width: 38px;
 }
 
 .floating-button-grip {

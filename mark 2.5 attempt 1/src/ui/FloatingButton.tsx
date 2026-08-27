@@ -127,13 +127,16 @@ export const FloatingButton: React.FC<Props> = ({
     screenY = Math.max(bounds.top, Math.min(bounds.bottom - btnSize.h, screenY));
   }
 
+  const shortcutText = shortcutLabel(shortcut);
+  const wideShortcut = shortcut.key === 'Delete' || shortcut.macKey === 'Backspace';
+
   return (
     <div
       ref={buttonRef}
       className={`floating-button ${isDragging ? 'dragging' : ''} ${disabled ? 'disabled' : ''} ${className}`}
       style={{ left: screenX, top: screenY }}
       data-tooltip={tooltip}
-      aria-keyshortcuts={shortcutLabel(shortcut)}
+      aria-keyshortcuts={shortcutText}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -152,7 +155,7 @@ export const FloatingButton: React.FC<Props> = ({
         icon && <span className="floating-button-icon">{icon}</span>
       )}
       <span className="floating-button-label">{label}</span>
-      <kbd className="floating-button-shortcut">{shortcutLabel(shortcut)}</kbd>
+      <kbd className={`floating-button-shortcut ${wideShortcut ? 'wide' : ''}`}>{shortcutText}</kbd>
       <span className="floating-button-grip">
         <svg viewBox="0 0 4 12" width="4" height="12" aria-hidden="true">
           <circle cx="1" cy="2" r="1" fill="currentColor" />

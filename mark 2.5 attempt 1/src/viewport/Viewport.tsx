@@ -17,6 +17,7 @@ import { swapArmDirection } from '../editor/constraints';
 import { resolveLaneRing } from '../core/routes';
 import { estimateArmLength, getRoadProfile, removeProfileLane, removeProfilePoint } from '../core/profile';
 import { sampleSpline } from '../math/spline';
+import { profileSideOuter } from '../profile/editorMath';
 
 type Props = {
   segments: ResolvedSegment[];
@@ -24,7 +25,7 @@ type Props = {
 
 const DEFAULT_BACKGROUND = '/default-background.png';
 const PASS_THROUGH_EXIT_TOLERANCE = 12;
-const SMART_FOCUS_ZOOM = 0.35;
+const SMART_FOCUS_ZOOM = 0.30;
 const SMART_ZOOM_MARGIN = 0.14;
 const SMART_ZOOM_DURATION = 280;
 
@@ -519,19 +520,27 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         );
       })()}
       {selection?.kind === 'profile-point' && svgRef.current && (() => {
+        const svg = svgRef.current;
         const arm = committedConfig.arms.find(candidate => candidate.id === selection.armId);
         const position = arm && profilePointPosition(arm, selection.pointId);
         if (!arm || !position) return null;
         const profile = getRoadProfile(arm, estimateArmLength(arm));
         const pointIndex = profile.findIndex(point => point.id === selection.pointId);
+        const point = profile[pointIndex];
+        if (!point) return null;
         const canDelete = profile.length > 2 && pointIndex > 0 && pointIndex < profile.length - 1;
-        const rect = svgRef.current.getBoundingClientRect();
+        const rect = svg.getBoundingClientRect();
+        const center = worldToScreen(position, svg);
+        const lineRadius = Math.max(profileSideOuter(point, 'in'), profileSideOuter(point, 'out')) + 14 * zoom;
+        const radiusEdge = worldToScreen({ x: position.x + lineRadius, y: position.y }, svg);
+        const screenRadius = Math.hypot(radiusEdge.x - center.x, radiusEdge.y - center.y);
+        const actionAnchor = { x: center.x + screenRadius * .8, y: center.y - screenRadius * .8 };
         return (
           <FloatingButton
             key={`${selection.armId}-${selection.pointId}-delete`}
             storageKey="delete_lane_point"
-            anchorPoint={worldToScreen(position, svgRef.current)}
-            defaultOffset={{ x: 24, y: -24 }}
+            anchorPoint={actionAnchor}
+            defaultOffset={{ x: 16, y: -48 }}
             bounds={{ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }}
             label="Delete Lane Point"
             tooltip={canDelete ? 'Delete this lane point.' : 'The first and last lane points cannot be deleted.'}

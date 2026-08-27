@@ -5,7 +5,6 @@ import {
   addProfilePoint,
   estimateArmLength,
   getRoadProfile,
-  interpolateProfile,
   isProfileLanePresent,
   laneBounds,
   moveProfileLaneTransition,
@@ -15,6 +14,19 @@ import {
   setProfileControl
 } from '../core/profile';
 import { useEditorStore } from '../editor/editorStore';
+import { ProfileAddLaneMarker } from '../profile/ProfileAddLaneMarker';
+import { ProfileControlIcon } from '../profile/ProfileControlIcon';
+import { ProfileTransitionMarker } from '../profile/ProfileTransitionMarker';
+import { profileControlColor } from '../profile/controlAppearance';
+import {
+  profileControlValue,
+  profileLaneInsertIndices,
+  profileSideOuter,
+  profileTransitionSection,
+  profileTransitionTargets,
+  snapProfileLaneWidth,
+  type ProfileDirection
+} from '../profile/editorMath';
 
 type Props = {
   config: RoundaboutConfig;
@@ -22,7 +34,7 @@ type Props = {
   onChange: (config: RoundaboutConfig) => void;
 };
 
-type Direction = 'in' | 'out';
+type Direction = ProfileDirection;
 type DragTarget =
   | { kind: 'distance'; pointId: string; startDistance: number; moved: boolean; original: RoundaboutConfig }
   | { kind: 'control'; pointId: string; dir: Direction; control: 'gap' | 'width'; laneIndex: number; original: RoundaboutConfig }
@@ -34,7 +46,6 @@ const WIDTH = 410;
 const HEIGHT = 520;
 const PAD_Y = 30;
 const CENTER_X = 205;
-const CONTROL_COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#0d9488', '#4f46e5'];
 
 function lanePaths(profile: RoadProfilePoint[], dir: Direction, laneIndex: number, xScale: number, yForDistance: (distance: number) => number) {
   const sign = dir === 'in' ? -1 : 1;
@@ -53,9 +64,6 @@ function lanePaths(profile: RoadProfilePoint[], dir: Direction, laneIndex: numbe
     return `M ${outer.join(' L ')} L ${inner.join(' L ')} Z`;
   });
 }
-
-const MOVEMENT_POINTER_PATH = 'M0.793044 3.29289L3.29304 0.792893C3.48058 0.605357 3.73493 0.5 4.00015 0.5H6.58594C7.13822 0.5 7.58594 0.947715 7.58594 1.5V6.5C7.58594 7.05228 7.13822 7.5 6.58594 7.5H4.00015C3.73493 7.5 3.48058 7.39464 3.29304 7.20711L0.793044 4.70711C0.40252 4.31658 0.402519 3.68342 0.793044 3.29289Z';
-const WIDTH_POINTER_PATH = 'M6.5166 4.5H3.93081C3.6656 4.5 3.41125 4.39464 3.22371 4.20711L1.7666 2.75L0.891602 1.875L0.721389 1.70479C0.553128 1.53653 0.473907 1.29886 0.507559 1.0633L0.50889 1.05398C0.514022 1.01806 0.522177 0.982633 0.533269 0.948083C0.618894 0.681374 0.866945 0.500475 1.14706 0.500455L6.51653 0.500071C7.06884 0.500032 7.5166 0.947759 7.5166 1.50007V3.5C7.5166 4.05228 7.06889 4.5 6.5166 4.5Z';
 
 function pointerTransform(x: number, y: number, travelY: number, sideSign: number, anchorX: number, anchorY: number, flipY = false) {
   const size = 1.6;
@@ -81,7 +89,7 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
   const transitionMagnetRef = React.useRef<number | null>(null);
   if (!arm || !selected) return null;
 
-  const maxOffset = Math.max(18, ...profile.flatMap(point => [sideOuter(point, 'in'), sideOuter(point, 'out')]));
+  const maxOffset = Math.max(18, ...profile.flatMap(point => [profileSideOuter(point, 'in'), profileSideOuter(point, 'out')]));
   const xScale = Math.min(5, (CENTER_X - 24) / maxOffset);
   const yForDistance = (distance: number) => HEIGHT - PAD_Y - Math.max(0, Math.min(1, distance / totalLength)) * (HEIGHT - PAD_Y * 2);
   const distanceForY = (y: number) => Math.max(0, Math.min(totalLength, (HEIGHT - PAD_Y - y) / (HEIGHT - PAD_Y * 2) * totalLength));
@@ -91,29 +99,10 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
   };
 
   const transitionPosition = (dir: Direction, laneIndex: number, boundaryIndex: number, sourceBoundary?: number) => {
-    const distance = (profile[boundaryIndex].distance + profile[boundaryIndex + 1].distance) / 2;
-    const section = interpolateProfile(profile, distance) as RoadProfilePoint;
-    if (sourceBoundary !== undefined && boundaryIndex !== sourceBoundary) {
-      const sourceTransition = profileLaneTransitions(profile, dir).find(transition => transition.laneIndex === laneIndex && transition.boundaryIndex === sourceBoundary);
-      const templatePoint = sourceTransition?.fromPresent ? profile[sourceBoundary] : profile[sourceBoundary + 1];
-      const template = templatePoint && (dir === 'in' ? templatePoint.lanesIn : templatePoint.lanesOut)[laneIndex];
-      const lanes = dir === 'in' ? section.lanesIn : section.lanesOut;
-      if (template) lanes[laneIndex] = { width: template.width / 2, gap: template.gap / 2 };
-    }
+    const section = profileTransitionSection(profile, dir, laneIndex, boundaryIndex, sourceBoundary);
     const bounds = laneBounds(section, dir, laneIndex);
     const sign = dir === 'in' ? -1 : 1;
-    return { x: CENTER_X + sign * (bounds.inner + (bounds.outer - bounds.inner) / 2) * xScale, y: yForDistance(distance) };
-  };
-
-  const transitionTargets = (dir: Direction, laneIndex: number, boundaryIndex: number) => {
-    const boundaries = profileLaneTransitions(profile, dir)
-      .filter(transition => transition.laneIndex === laneIndex)
-      .map(transition => transition.boundaryIndex)
-      .sort((a, b) => a - b);
-    const transitionIndex = boundaries.indexOf(boundaryIndex);
-    const first = (boundaries[transitionIndex - 1] ?? -1) + 1;
-    const last = (boundaries[transitionIndex + 1] ?? profile.length - 1) - 1;
-    return Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index).filter(candidate => candidate !== boundaryIndex);
+    return { x: CENTER_X + sign * (bounds.inner + (bounds.outer - bounds.inner) / 2) * xScale, y: yForDistance(section.distance) };
   };
 
   const startDrag = (event: React.PointerEvent<SVGElement>, target: Omit<Extract<DragTarget, { kind: 'distance' }>, 'original'> | Omit<Extract<DragTarget, { kind: 'control' }>, 'original'> | Omit<Extract<DragTarget, { kind: 'transition' }>, 'original'>) => {
@@ -138,7 +127,7 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
       return;
     }
     if (state.kind === 'transition') {
-      const targets = transitionTargets(state.dir, state.laneIndex, state.boundaryIndex);
+      const targets = profileTransitionTargets(profile, state.dir, state.laneIndex, state.boundaryIndex);
       let target = transitionMagnetRef.current;
       if (target === null || Math.hypot(transitionPosition(state.dir, state.laneIndex, target, state.boundaryIndex).x - pointer.x, transitionPosition(state.dir, state.laneIndex, target, state.boundaryIndex).y - pointer.y) > 18) {
         target = null;
@@ -160,38 +149,11 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
     if (!sourcePoint) return;
     const sign = state.dir === 'in' ? -1 : 1;
     const offset = Math.max(0, (pointer.x - CENTER_X) * sign / xScale);
-    const bounds = laneBounds(sourcePoint, state.dir, state.laneIndex);
-    const lane = (state.dir === 'in' ? sourcePoint.lanesIn : sourcePoint.lanesOut)[state.laneIndex];
-    let value = state.control === 'gap'
-      ? offset - bounds.base - (lane?.width ?? 0) / 2
-      : offset - bounds.inner;
+    let value = profileControlValue(sourcePoint, state.dir, state.laneIndex, state.control, offset);
     if (state.control === 'width') {
-      const snapThreshold = .5;
-      let snappedWidth: number | null = null;
-      let snapDist = Infinity;
-      for (const checkDir of ['in', 'out'] as const) {
-        const checkLanes = checkDir === 'in' ? sourcePoint.lanesIn : sourcePoint.lanesOut;
-        checkLanes.forEach((checkLane, checkIndex) => {
-          if (checkDir === state.dir && checkIndex === state.laneIndex) return;
-          if (!isProfileLanePresent(checkLane)) return;
-          const dist = Math.abs(value - checkLane.width);
-          if (dist < snapThreshold && dist < snapDist) { snapDist = dist; snappedWidth = checkLane.width; }
-        });
-      }
-      if (snappedWidth !== null) {
-        value = snappedWidth;
-        const matches: { dir: Direction; laneIndex: number }[] = [];
-        for (const checkDir of ['in', 'out'] as const) {
-          const checkLanes = checkDir === 'in' ? sourcePoint.lanesIn : sourcePoint.lanesOut;
-          checkLanes.forEach((checkLane, checkIndex) => {
-            if (!isProfileLanePresent(checkLane)) return;
-            if (Math.abs(snappedWidth! - checkLane.width) < .01) matches.push({ dir: checkDir, laneIndex: checkIndex });
-          });
-        }
-        setWidthSnapMatches(matches);
-      } else {
-        setWidthSnapMatches([]);
-      }
+      const snapped = snapProfileLaneWidth(sourcePoint, state.dir, state.laneIndex, value);
+      value = snapped.value;
+      setWidthSnapMatches(snapped.matches);
     }
     onChange(setProfileControl(state.original, armId, state.pointId, state.dir, state.control, Math.max(0, value), state.laneIndex));
   };
@@ -268,8 +230,8 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
           const dragging = state?.kind === 'transition' && state.dir === dir && state.laneIndex === transition.laneIndex && state.boundaryIndex === transition.boundaryIndex;
           const center = dragging && transitionDrag ? transitionDrag : { ...home, sourceBoundary: transition.boundaryIndex, targetBoundary: null };
           const added = dir === 'out' ? transition.toPresent : transition.fromPresent;
-          const color = CONTROL_COLORS[transition.laneIndex % CONTROL_COLORS.length];
-          const targets = dragging ? transitionTargets(dir, transition.laneIndex, transition.boundaryIndex) : [];
+          const color = profileControlColor(transition.laneIndex);
+          const targets = dragging ? profileTransitionTargets(profile, dir, transition.laneIndex, transition.boundaryIndex) : [];
           return (
             <g key={`${dir}-${transition.laneIndex}-transition-${transition.boundaryIndex}`}>
               {targets.map(boundaryIndex => {
@@ -288,8 +250,7 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
                 }}
               >
                 <circle r="9" fill="transparent" data-handle="true" data-tooltip={added ? 'Move lane start.' : 'Move lane end.'} />
-                <path d="M 0 -7.5 L 7.5 0 L 0 7.5 L -7.5 0 Z" fill="#fff" stroke={color} strokeWidth="1.5" strokeLinejoin="round" pointerEvents="none" />
-                <path d={added ? 'M -2 0 H 2 M 0 -2 V 2' : 'M -2 0 H 2'} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" pointerEvents="none" />
+                <ProfileTransitionMarker added={added} color={color} />
               </g>
             </g>
           );
@@ -316,30 +277,28 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
               const bounds = laneBounds(selected, dir, laneIndex);
               const shiftX = CENTER_X + sign * (bounds.inner + lane.width / 2) * xScale;
               const widthX = CENTER_X + sign * bounds.outer * xScale;
-              const color = CONTROL_COLORS[laneIndex % CONTROL_COLORS.length];
+              const color = profileControlColor(laneIndex);
               const widthTooltip = 'Adjust width.';
               controls.push(
                 <g key={`${dir}-${laneIndex}-gap`} cursor="grab" onPointerDown={event => startDrag(event, { kind: 'control', pointId: selected.id, dir, control: 'gap', laneIndex })}>
                   <circle cx={shiftX} cy={y} r="9" fill="transparent" data-handle="true" data-tooltip="Shift lane." />
-                  <path d={MOVEMENT_POINTER_PATH} transform={pointerTransform(shiftX, y, travelY, sign, 4, 4)} fill="#fff" stroke={color} strokeWidth=".8" pointerEvents="none" />
+                  <ProfileControlIcon kind="gap" color={color} transform={pointerTransform(shiftX, y, travelY, sign, 4, 4)} />
                 </g>,
                 <g key={`${dir}-${laneIndex}-width`} cursor="grab" onPointerDown={event => startDrag(event, { kind: 'control', pointId: selected.id, dir, control: 'width', laneIndex })}>
                   <circle cx={widthX} cy={y} r="9" fill="transparent" data-handle="true" data-tooltip={widthTooltip} />
-                  <path d={WIDTH_POINTER_PATH} transform={pointerTransform(widthX, y, travelY, sign, 4, 0, true)} fill="#fff" stroke={color} strokeWidth=".8" pointerEvents="none" />
+                  <ProfileControlIcon kind="width" color={color} transform={pointerTransform(widthX, y, travelY, sign, 4, 0, true)} />
                 </g>
               );
             });
-            const visibleLaneIndices = lanes.flatMap((lane, laneIndex) => isProfileLanePresent(lane) ? [laneIndex] : []);
-            const insertIndices = visibleLaneIndices.length ? [...visibleLaneIndices, visibleLaneIndices[visibleLaneIndices.length - 1] + 1] : [0];
+            const insertIndices = profileLaneInsertIndices(selected, dir);
             for (const insertIndex of insertIndices) {
               const offset = insertIndex === 0 ? selected.medianWidth / 2 : laneBounds(selected, dir, insertIndex - 1).outer;
               const x = CENTER_X + sign * offset * xScale;
-              const color = CONTROL_COLORS[Math.min(insertIndex, Math.max(0, lanes.length - 1)) % CONTROL_COLORS.length];
+              const color = profileControlColor(Math.min(insertIndex, Math.max(0, lanes.length - 1)));
               controls.push(
                 <g key={`${dir}-add-${insertIndex}`} transform={`translate(${x} ${y - travelY * 26})`} cursor="pointer" onPointerDown={event => { event.preventDefault(); event.stopPropagation(); onChange(addProfileLane(config, armId, selected.id, dir, insertIndex)); }}>
                   <circle r="9" fill="transparent" data-handle="true" data-tooltip="Add lane." />
-                  <circle r="6" fill={color} pointerEvents="none" />
-                  <path d="M -2.7 0 H 2.7 M 0 -2.7 V 2.7" fill="none" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" pointerEvents="none" />
+                  <ProfileAddLaneMarker color={color} />
                 </g>
               );
             }
@@ -361,8 +320,3 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
     </section>
   );
 };
-
-function sideOuter(point: RoadProfilePoint, dir: Direction) {
-  const lanes = dir === 'in' ? point.lanesIn : point.lanesOut;
-  return lanes.reduce((outer, lane, laneIndex) => isProfileLanePresent(lane) ? Math.max(outer, laneBounds(point, dir, laneIndex).outer) : outer, point.medianWidth / 2);
-}

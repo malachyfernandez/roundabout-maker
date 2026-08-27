@@ -4,7 +4,7 @@ import { type Line, normalizeAngle } from '../geometry/primitives';
 import { add, fromAngle, scale, sub, normalize, dot, len, type Vec2 } from '../math/vector';
 import { createRightTurnBypass } from './bypass';
 import { offsetSpline } from '../math/spline';
-import { laneOffsetAt, sampleProfile } from './profile';
+import { laneOffsetAt, ringOuterEdgePathIndex, sampleProfile } from './profile';
 
 export type EntryLeg = {
   armId: string;
@@ -163,16 +163,6 @@ export function solveLaneFillet(config: RoundaboutConfig, armId: string, dir: 'i
 
 export function solveLaneRingAttachmentPoint(config: RoundaboutConfig, armId: string, dir: 'in' | 'out', laneIndex: number, ringId: string): Vec2 | null {
   return solveLaneFillet(config, armId, dir, laneIndex, ringId)?.tangentPointRing ?? null;
-}
-
-function indexAtDistance(points: Vec2[], target: number) {
-  if (points.length < 2) return 0;
-  let distance = 0;
-  for (let index = 1; index < points.length; index++) {
-    distance += len(sub(points[index], points[index - 1]));
-    if (distance >= target) return index;
-  }
-  return Math.max(0, points.length - 2);
 }
 
 type BypassConnectorCandidate = {
@@ -360,7 +350,6 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     }
   }
 
-  const circulatoryOuterEdge = Math.max(35, ...config.rings.map(ring => ring.radius + ring.width / 2));
   const isPathVisible = (path: { widths: number[] }) => path.widths.some(width => width > .05);
   const bypassRoutes: BypassRoute[] = [];
   if (options.bypassEnabled) {
@@ -414,7 +403,8 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
           if ((dir === 'in' ? bypassEntries : bypassExits).has(`${arm.id}_${laneIdx}`)) continue;
           const path = lanePaths.get(key);
           if (!path) continue;
-          const ringIndex = indexAtDistance(path.points, circulatoryOuterEdge);
+          const ring = resolveLaneRing(config, arm, dir, laneIdx);
+          const ringIndex = ring ? ringOuterEdgePathIndex(path.points, ring) : 0;
           if ((path.widths[ringIndex] ?? 0) >= .5) continue;
           const firstVisible = path.widths.findIndex(width => width > .05);
           if (firstVisible < 0) continue;

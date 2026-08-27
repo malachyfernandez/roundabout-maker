@@ -8,13 +8,11 @@ export type RingConfig = {
 };
 
 export type LaneIn = {
-  width: number;
   targetsRing?: string;
   filletRadius?: number;
 };
 
 export type LaneOut = {
-  width: number;
   sourceRing?: string;
   filletRadius?: number;
   dropsRing: boolean;
@@ -62,8 +60,8 @@ export type ArmConfig = {
   nodes: ArmNode[];
   profile?: RoadProfilePoint[];
   // Topology remains global to the arm
-  lanesIn: { targetsRing?: string; filletRadius?: number }[];
-  lanesOut: { sourceRing?: string; filletRadius?: number; dropsRing: boolean }[];
+  lanesIn: LaneIn[];
+  lanesOut: LaneOut[];
 };
 
 export type RoundaboutConfig = {

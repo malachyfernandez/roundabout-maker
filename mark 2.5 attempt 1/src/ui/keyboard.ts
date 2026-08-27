@@ -12,7 +12,7 @@ export const DELETE_SHORTCUT: KeyboardShortcut = {
   key: 'Delete',
   macKey: 'Backspace',
   label: 'Del',
-  macLabel: '⌫'
+  macLabel: 'Del'
 };
 
 export function isMacPlatform() {
