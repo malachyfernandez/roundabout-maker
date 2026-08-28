@@ -1,8 +1,9 @@
 import React from 'react';
 import { Settings, X } from 'lucide-react';
 import { useEditorStore } from '../editor/editorStore';
+import { PERFORMANCE_PRESETS, type PerformancePreset } from '../editor/performance';
 
-export const TopBar: React.FC = () => {
+export const TopBar: React.FC = React.memo(() => {
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const settings = useEditorStore(state => state.settings);
   const setSettings = useEditorStore(state => state.setSettings);
@@ -34,6 +35,23 @@ export const TopBar: React.FC = () => {
               </button>
             </div>
             <div className="settings-body">
+              <section className="settings-section">
+                <div className="settings-section-title">
+                  <strong>Optimizations</strong>
+                  <small>Choose how much detail updates during interactions</small>
+                </div>
+                <div className="performance-presets">
+                  {(Object.entries(PERFORMANCE_PRESETS) as [PerformancePreset, (typeof PERFORMANCE_PRESETS)[PerformancePreset]][]).map(([preset, option]) => (
+                    <label key={preset} className={`performance-preset${settings.performancePreset === preset ? ' active' : ''}`}>
+                      <input type="radio" name="performance-preset" checked={settings.performancePreset === preset} onChange={() => setSettings({ performancePreset: preset })} />
+                      <span>
+                        <strong>{option.label}</strong>
+                        <small>{option.description}</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </section>
               <label className="settings-row">
                 <div className="settings-label">
                   <strong>Zoom sensitivity</strong>
@@ -202,4 +220,4 @@ export const TopBar: React.FC = () => {
       )}
     </header>
   );
-};
+});

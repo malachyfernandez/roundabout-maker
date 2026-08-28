@@ -88,6 +88,15 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
     event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
+  const handlePointerCancel = (event: React.PointerEvent<SVGPathElement>) => {
+    setDraftConfig(null);
+    setDrag(null);
+    startPoint.current = null;
+    insertedConfig.current = null;
+    insertedNodeId.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
   const showSpline = !anySelection || selected || relatedSelected || hovered;
   const guideColor = `hsl(221, 83%, ${guideLightness}%)`;
   const isHoverOnly = hovered && !selected && !relatedSelected;
@@ -120,7 +129,7 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
       />
     </g>
   );
@@ -129,9 +138,10 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
 type Props = {
   config: RoundaboutConfig;
   zoom: number;
+  effectsEnabled: boolean;
 };
 
-export const CenterlineLayer: React.FC<Props> = ({ config, zoom }) => {
+export const CenterlineLayer: React.FC<Props> = React.memo(({ config, zoom, effectsEnabled }) => {
   const selection = useEditorStore(state => state.selection);
   const hovered = useEditorStore(state => state.hovered);
   const viewMode = useEditorStore(state => state.viewMode);
@@ -172,9 +182,9 @@ export const CenterlineLayer: React.FC<Props> = ({ config, zoom }) => {
           passedThrough={passThroughStack.includes(JSON.stringify({ kind: 'arm', armId: arm.id }))}
           hovered={hovered?.kind === 'arm' && hovered.armId === arm.id}
           guideLightness={guideLightness}
-          guideShadowStrength={guideShadowStrength}
+          guideShadowStrength={effectsEnabled ? guideShadowStrength : 0}
         />
       ))}
     </g>
   );
-};
+});

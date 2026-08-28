@@ -30,7 +30,7 @@ type Props = {
   errors: string[];
 };
 
-export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
+export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }) => {
   const selection = useEditorStore(state => state.selection);
   const setSelection = useEditorStore(state => state.setSelection);
   const resetToDefault = useEditorStore(state => state.resetToDefault);
@@ -431,4 +431,4 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
       {(selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'profile-point') && renderArm(selection.armId)}
     </div>
   );
-};
+});

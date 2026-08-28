@@ -52,7 +52,7 @@ type DragState =
 
 type TransitionDrag = { sourceBoundary: number; targetBoundary: number | null; point: Vec2 };
 
-export const LaneProfileLayer: React.FC<Props> = ({ zoom, onSmartZoom }) => {
+export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom }) => {
   const committedConfig = useEditorStore(state => state.committedConfig);
   const draftConfig = useEditorStore(state => state.draftConfig);
   const selection = useEditorStore(state => state.selection);
@@ -118,6 +118,19 @@ export const LaneProfileLayer: React.FC<Props> = ({ zoom, onSmartZoom }) => {
     } else {
       commitDraft();
     }
+    dragRef.current = null;
+    transitionMagnetRef.current = null;
+    setTransitionDrag(null);
+    setWidthSnapMatches([]);
+    setGapSnapMatches([]);
+    setDrag(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    rootRef.current?.releasePointerCapture(event.pointerId);
+  };
+
+  const cancelDrag = (event: React.PointerEvent<SVGElement>) => {
+    if (!dragRef.current) return;
+    setDraftConfig(null);
     dragRef.current = null;
     transitionMagnetRef.current = null;
     setTransitionDrag(null);
@@ -266,7 +279,7 @@ export const LaneProfileLayer: React.FC<Props> = ({ zoom, onSmartZoom }) => {
   });
 
   return (
-    <g ref={rootRef} onPointerMove={moveDrag} onPointerUp={finishDrag} onPointerCancel={finishDrag}>
+    <g ref={rootRef} onPointerMove={moveDrag} onPointerUp={finishDrag} onPointerCancel={cancelDrag}>
       {bands}
       {ghostLine}
       {profile.map((point, pointIndex) => {
@@ -395,4 +408,4 @@ export const LaneProfileLayer: React.FC<Props> = ({ zoom, onSmartZoom }) => {
       })()}
     </g>
   );
-};
+});

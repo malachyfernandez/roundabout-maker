@@ -37,7 +37,7 @@ type ConnectionMagnet =
   | { kind: 'ring'; ringId: string; point: Vec2 }
   | { kind: 'lane'; lane: LaneTarget; point: Vec2 };
 
-export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
+export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => {
   const committedConfig = useEditorStore(state => state.committedConfig);
   const draftConfig = useEditorStore(state => state.draftConfig);
   const selection = useEditorStore(state => state.selection);
@@ -535,4 +535,4 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
       })}
     </g>
   );
-};
+});

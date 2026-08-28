@@ -171,13 +171,11 @@ export function sampleSpline(spline: CatmullRomSpline, numSamples: number = 20) 
 }
 
 /**
- * Creates an offset curve (polyline) from a base spline by interpolating offset distances.
- * @param offsets An array of offset values, one for each point in the base spline.
+ * Creates an offset curve (polyline) from sampled spline geometry by interpolating offset distances.
+ * @param offsets An array of offset values along the sampled spline.
  */
-export function offsetSpline(spline: CatmullRomSpline, offsets: number[], numSamples: number = 20) {
-  const samples = sampleSpline(spline, numSamples);
-  
-  // Interpolate offset for each sample
+export function offsetSplineSamples(samples: { p: Vec2; normal: Vec2 }[], offsets: number[]) {
+  const numSamples = Math.max(1, samples.length - 1);
   const offsetPoints = samples.map((sample, idx) => {
     const t = idx / numSamples;
     
@@ -198,6 +196,10 @@ export function offsetSpline(spline: CatmullRomSpline, offsets: number[], numSam
   });
 
   return offsetPoints;
+}
+
+export function offsetSpline(spline: CatmullRomSpline, offsets: number[], numSamples: number = 20) {
+  return offsetSplineSamples(sampleSpline(spline, numSamples), offsets);
 }
 
 /**

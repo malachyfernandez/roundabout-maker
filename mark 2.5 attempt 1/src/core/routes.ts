@@ -3,7 +3,7 @@ import { solveFillet, solveLineLineFillets, type FilletSolution, type LineLineFi
 import { type Line, normalizeAngle } from '../geometry/primitives';
 import { add, fromAngle, scale, sub, normalize, dot, len, type Vec2 } from '../math/vector';
 import { createRightTurnBypass } from './bypass';
-import { offsetSpline } from '../math/spline';
+import { offsetSplineSamples, sampleSpline } from '../math/spline';
 import { laneOffsetAt, ringOuterEdgePathIndex, sampleProfile } from './profile';
 
 export type RoadEndpoint = 'start' | 'end';
@@ -166,7 +166,7 @@ function lanePath(config: RoundaboutConfig, arm: ArmConfig, dir: 'in' | 'out', l
   const isRHD = config.circulation === 'ccw';
   const offsets = profile.sections.map(section => laneOffsetAt(section, laneIndex, laneIsIn, isRHD));
   return {
-    points: offsetSpline(baseSpline, offsets, 90),
+    points: offsetSplineSamples(profile.samples, offsets),
     widths: profile.sections.map(section => laneIsIn ? section.lanesIn[laneIndex]?.width ?? 0 : section.lanesOut[laneIndex]?.width ?? 0)
   };
 }
@@ -266,6 +266,7 @@ function solveBypassConnectorCandidates(points: Vec2[], bypassLine: Line, radius
 export type CompileOptions = {
   profileEnabled?: boolean;
   bypassEnabled?: boolean;
+  sampleCount?: number;
 };
 
 function solveBestBypassPair(
@@ -308,6 +309,7 @@ export function resolveLaneRing(config: RoundaboutConfig, arm: ArmConfig, dir: '
 export function compileRoutes(config: RoundaboutConfig, options: CompileOptions = {}): RouteSymbolic[] {
   const circDir = getCircDir(config.circulation);
   const isRHD = config.circulation === 'ccw';
+  const sampleCount = options.sampleCount ?? 90;
 
   // 1. Precompute lane centerlines for all arms
   const lanePaths = new Map<string, { points: {x:number, y:number}[], widths: number[], line: Line }>();
@@ -321,7 +323,8 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       alpha: 0.5, // Centripetal
       tension: 0.0
     };
-    const profileSample = options.profileEnabled ? sampleProfile(arm, baseSpline, 90) : null;
+    const profileSample = options.profileEnabled ? sampleProfile(arm, baseSpline, sampleCount) : null;
+    const baseSamples = profileSample?.samples ?? sampleSpline(baseSpline, sampleCount);
 
     // Helper to calculate cumulative widths at each node for offsetting
     const getOffsets = (getLaneWidths: (n: any) => number[], getMedian: (n: any) => number, laneIdx: number, isRHD: boolean, isEntry: boolean) => {
@@ -358,7 +361,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       const offsets = profileSample
         ? profileSample.sections.map(section => laneOffsetAt(section, i, true, isRHD))
         : getOffsets(n => n.laneWidthsIn || [], n => n.medianWidth, i, isRHD, true);
-      const lanePoints = offsetSpline(baseSpline, offsets, 90); // returns array of Vec2
+      const lanePoints = offsetSplineSamples(baseSamples, offsets); // returns array of Vec2
       const widths = profileSample
         ? profileSample.sections.map(section => section.lanesIn[i]?.width ?? 0)
         : lanePoints.map(() => arm.nodes[0].laneWidthsIn[i] || 10);
@@ -383,7 +386,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       const offsets = profileSample
         ? profileSample.sections.map(section => laneOffsetAt(section, i, false, isRHD))
         : getOffsets(n => n.laneWidthsOut || [], n => n.medianWidth, i, isRHD, false);
-      const lanePoints = offsetSpline(baseSpline, offsets, 90);
+      const lanePoints = offsetSplineSamples(baseSamples, offsets);
       const widths = profileSample
         ? profileSample.sections.map(section => section.lanesOut[i]?.width ?? 0)
         : lanePoints.map(() => arm.nodes[0].laneWidthsOut[i] || 10);

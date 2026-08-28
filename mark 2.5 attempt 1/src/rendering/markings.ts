@@ -193,17 +193,45 @@ function buildYieldMarkings(config: RoundaboutConfig, segments: ResolvedSegment[
   return markings;
 }
 
-function pointInsideSegment(point: Vec2, segment: ResolvedSegment, collisionBuffer: number) {
+type PavementEdge = { ax: number; ay: number; dx: number; dy: number; lengthSquared: number; startRadius: number; endRadius: number; minX: number; minY: number; maxX: number; maxY: number };
+type PavementFootprint = { edges: PavementEdge[]; minX: number; minY: number; maxX: number; maxY: number };
+
+function pavementFootprint(segment: ResolvedSegment, collisionBuffer: number): PavementFootprint {
   const points = segmentPoints(segment);
+  const edges: PavementEdge[] = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
   for (let index = 0; index < points.length - 1; index++) {
-    const edge = sub(points[index + 1], points[index]);
-    const edgeLengthSquared = dot(edge, edge);
-    if (edgeLengthSquared < 1e-9) continue;
-    const t = Math.max(0, Math.min(1, dot(sub(point, points[index]), edge) / edgeLengthSquared));
-    const projected = add(points[index], scale(edge, t));
-    const startWidth = widthAt(segment, index, points.length);
-    const endWidth = widthAt(segment, index + 1, points.length);
-    if (len(sub(point, projected)) <= Math.max(0, (startWidth + (endWidth - startWidth) * t) / 2 + collisionBuffer)) return true;
+    const a = points[index];
+    const b = points[index + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared < 1e-9) continue;
+    const startRadius = Math.max(0, widthAt(segment, index, points.length) / 2 + collisionBuffer);
+    const endRadius = Math.max(0, widthAt(segment, index + 1, points.length) / 2 + collisionBuffer);
+    const radius = Math.max(startRadius, endRadius);
+    const edge = { ax: a.x, ay: a.y, dx, dy, lengthSquared, startRadius, endRadius, minX: Math.min(a.x, b.x) - radius, minY: Math.min(a.y, b.y) - radius, maxX: Math.max(a.x, b.x) + radius, maxY: Math.max(a.y, b.y) + radius };
+    minX = Math.min(minX, edge.minX);
+    minY = Math.min(minY, edge.minY);
+    maxX = Math.max(maxX, edge.maxX);
+    maxY = Math.max(maxY, edge.maxY);
+    edges.push(edge);
+  }
+  return { edges, minX, minY, maxX, maxY };
+}
+
+function pointInsideFootprint(point: Vec2, footprint: PavementFootprint) {
+  if (point.x < footprint.minX || point.x > footprint.maxX || point.y < footprint.minY || point.y > footprint.maxY) return false;
+  for (const edge of footprint.edges) {
+    if (point.x < edge.minX || point.x > edge.maxX || point.y < edge.minY || point.y > edge.maxY) continue;
+    const t = Math.max(0, Math.min(1, ((point.x - edge.ax) * edge.dx + (point.y - edge.ay) * edge.dy) / edge.lengthSquared));
+    const dx = point.x - (edge.ax + edge.dx * t);
+    const dy = point.y - (edge.ay + edge.dy * t);
+    const radius = edge.startRadius + (edge.endRadius - edge.startRadius) * t;
+    if (dx * dx + dy * dy <= radius * radius) return true;
   }
   return false;
 }
@@ -290,14 +318,14 @@ function ringComponents(segments: RingSegment[]) {
 function buildRingEnvelopeMarkings(segments: ResolvedSegment[], collisionBuffer: number) {
   const markings: Marking[] = [];
   const ringSegments = segments.filter((segment): segment is RingSegment => segment.kind === 'ring-arc' && segment.source.kind === 'ring' && segment.geom.kind === 'arc');
-  const roadSegments = segments.filter(segment => segment.source.kind === 'lane');
+  const roadFootprints = segments.filter(segment => segment.source.kind === 'lane').map(segment => pavementFootprint(segment, collisionBuffer));
   for (const segment of ringSegments) {
     const centerline = segmentPoints(segment);
     const values = (factor: number) => centerline.map((point, index) => {
       const edgePoint = add(point, scale(norm(sub(point, segment.geom.c)), widthAt(segment, index, centerline.length) * factor));
       return {
         point: edgePoint,
-        status: roadSegments.some(road => pointInsideSegment(edgePoint, road, collisionBuffer)) ? 'dashed' as const : 'solid' as const
+        status: roadFootprints.some(footprint => pointInsideFootprint(edgePoint, footprint)) ? 'dashed' as const : 'solid' as const
       };
     });
     const id = `${segment.source.ringId}_${segment.routeId}_${segment.segIndex}`;
@@ -321,7 +349,7 @@ function buildRingEnvelopeMarkings(segments: ResolvedSegment[], collisionBuffer:
       const point = add(center, scale(direction, nearest.start));
       return {
         point,
-        status: roadSegments.some(road => pointInsideSegment(point, road, collisionBuffer)) ? 'dashed' as const : 'solid' as const
+        status: roadFootprints.some(footprint => pointInsideFootprint(point, footprint)) ? 'dashed' as const : 'solid' as const
       };
     });
     pushPointRuns(markings, values, `central_component_${componentIndex}`, 'The contiguous inner envelope of each connected ring set receives the yellow central line.', '#facc15', .8, 29);

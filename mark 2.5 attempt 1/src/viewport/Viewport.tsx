@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { ArrowLeftRight, Trash2 } from 'lucide-react';
-import { type ArmConfig } from '../config/types';
+import { type ArmConfig, type RoundaboutConfig } from '../config/types';
 import { type ResolvedSegment } from '../core/solver';
 import { useEditorStore } from '../editor/editorStore';
 import { GeometryLayer } from '../canvas/GeometryLayer';
@@ -18,8 +18,10 @@ import { resolveLaneRing } from '../core/routes';
 import { estimateArmLength, getRoadProfile, removeProfileLane, removeProfilePoint } from '../core/profile';
 import { sampleSpline } from '../math/spline';
 import { profileSideOuter } from '../profile/editorMath';
+import { performancePolicy } from '../editor/performance';
 
 type Props = {
+  renderConfig: RoundaboutConfig;
   segments: ResolvedSegment[];
 };
 
@@ -28,6 +30,7 @@ const PASS_THROUGH_EXIT_TOLERANCE = 12;
 const SMART_FOCUS_ZOOM = 0.30;
 const SMART_ZOOM_MARGIN = 0.14;
 const SMART_ZOOM_DURATION = 280;
+const CULL_MARGIN_RATIO = 0.06;
 
 const hitTestTargets = (x: number, y: number, passThroughStack: string[]) => {
   const elements = document.elementsFromPoint(x, y);
@@ -67,7 +70,7 @@ const profilePointPosition = (arm: ArmConfig, pointId: string) => {
   return samples[samples.length - 1].p;
 };
 
-export const Viewport: React.FC<Props> = ({ segments }) => {
+export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   const getStored = <T,>(key: string, fallback: T): T => {
     const saved = localStorage.getItem(key);
     if (saved) try { return JSON.parse(saved) as T; } catch {}
@@ -82,6 +85,9 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   const panRef = useRef(pan);
   const zoomRef = useRef(zoom);
   const viewAnimationRef = useRef<number | null>(null);
+  const viewUpdateRef = useRef<number | null>(null);
+  const viewIdleTimerRef = useRef<number | null>(null);
+  const hoverFrameRef = useRef<number | null>(null);
 
   React.useEffect(() => { panRef.current = pan; }, [pan]);
   React.useEffect(() => { zoomRef.current = zoom; }, [zoom]);
@@ -89,7 +95,11 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   React.useEffect(() => {
     const reset = () => {
       if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
+      if (viewUpdateRef.current !== null) cancelAnimationFrame(viewUpdateRef.current);
       viewAnimationRef.current = null;
+      viewUpdateRef.current = null;
+      panRef.current = { x: 0, y: 0 };
+      zoomRef.current = 1;
       setBgImage(DEFAULT_BACKGROUND);
       setBgOpacity(0.5);
       setBgSize(200);
@@ -106,12 +116,18 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   }, [bgImage]);
   React.useEffect(() => { localStorage.setItem('roundabout_bgOp', JSON.stringify(bgOpacity)); }, [bgOpacity]);
   React.useEffect(() => { localStorage.setItem('roundabout_bgSize', JSON.stringify(bgSize)); }, [bgSize]);
-  React.useEffect(() => { localStorage.setItem('roundabout_pan', JSON.stringify(pan)); }, [pan]);
-  React.useEffect(() => { localStorage.setItem('roundabout_zoom', JSON.stringify(zoom)); }, [zoom]);
+  React.useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      localStorage.setItem('roundabout_pan', JSON.stringify(pan));
+      localStorage.setItem('roundabout_zoom', JSON.stringify(zoom));
+    }, 180);
+    return () => clearTimeout(timeout);
+  }, [pan, zoom]);
 
   const [isDragging, setIsDragging] = useState(false);
-  const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 });
+  const [viewInteracting, setViewInteracting] = useState(false);
   const lastMouseRef = useRef({ x: 0, y: 0 });
+  const panMouseRef = useRef({ x: 0, y: 0 });
   const passThroughContactRef = useRef<{ x: number; y: number } | null>(null);
   
   const svgRef = useRef<SVGSVGElement>(null);
@@ -140,6 +156,43 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
   const height = baseViewSize * zoom;
   const vx = pan.x - width / 2;
   const vy = pan.y - height / 2;
+  const visibleBounds = React.useMemo(() => {
+    const margin = Math.max(width, height) * CULL_MARGIN_RATIO;
+    return {
+      minX: vx - margin,
+      minY: vy - margin,
+      maxX: vx + width + margin,
+      maxY: vy + height + margin
+    };
+  }, [height, vx, vy, width]);
+  const policy = performancePolicy(settings.performancePreset);
+  const interactionActive = Boolean(activeDrag?.active) || isDragging || viewInteracting;
+  const effectsEnabled = policy.effectsDuringInteraction || !interactionActive;
+  const viewDetailsEnabled = policy.effectsDuringInteraction || (!isDragging && !viewInteracting);
+
+  const queueViewUpdate = React.useCallback(() => {
+    if (viewUpdateRef.current !== null) return;
+    viewUpdateRef.current = requestAnimationFrame(() => {
+      viewUpdateRef.current = null;
+      setZoom(zoomRef.current);
+      setPan(panRef.current);
+    });
+  }, []);
+
+  const markViewInteraction = React.useCallback(() => {
+    setViewInteracting(true);
+    if (viewIdleTimerRef.current !== null) clearTimeout(viewIdleTimerRef.current);
+    viewIdleTimerRef.current = window.setTimeout(() => {
+      viewIdleTimerRef.current = null;
+      setViewInteracting(false);
+    }, 140);
+  }, []);
+
+  React.useEffect(() => () => {
+    if (viewUpdateRef.current !== null) cancelAnimationFrame(viewUpdateRef.current);
+    if (hoverFrameRef.current !== null) cancelAnimationFrame(hoverFrameRef.current);
+    if (viewIdleTimerRef.current !== null) clearTimeout(viewIdleTimerRef.current);
+  }, []);
 
   const cancelViewAnimation = React.useCallback(() => {
     if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
@@ -176,6 +229,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
     cancelViewAnimation();
     const start = performance.now();
     const animate = (now: number) => {
+      markViewInteraction();
       const progress = Math.min(1, (now - start) / SMART_ZOOM_DURATION);
       const eased = 1 - Math.pow(1 - progress, 3);
       const nextZoom = currentZoom + (targetZoom - currentZoom) * eased;
@@ -190,7 +244,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
       viewAnimationRef.current = progress < 1 ? requestAnimationFrame(animate) : null;
     };
     viewAnimationRef.current = requestAnimationFrame(animate);
-  }, [cancelViewAnimation, settings.smartZoom]);
+  }, [cancelViewAnimation, markViewInteraction, settings.smartZoom]);
 
   React.useEffect(() => cancelViewAnimation, [cancelViewAnimation]);
   React.useEffect(() => { if (!settings.smartZoom) cancelViewAnimation(); }, [cancelViewAnimation, settings.smartZoom]);
@@ -203,7 +257,14 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       cancelViewAnimation();
+      markViewInteraction();
       const rect = svg.getBoundingClientRect();
+      const currentZoom = zoomRef.current;
+      const currentPan = panRef.current;
+      const currentWidth = baseViewSize * currentZoom;
+      const currentHeight = baseViewSize * currentZoom;
+      const currentVx = currentPan.x - currentWidth / 2;
+      const currentVy = currentPan.y - currentHeight / 2;
 
       // Pinch-to-zoom on trackpads fires with ctrlKey=true.
       // Two-finger panning fires with ctrlKey=false and both deltaX/deltaY set.
@@ -211,34 +272,32 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
         // Pinch zoom — uses zoomSensitivity from settings
         const intensity = Math.min(Math.abs(e.deltaY) / 80, 2);
         const zoomFactor = e.deltaY > 0 ? 1 + settings.zoomSensitivity * intensity : 1 - settings.zoomSensitivity * intensity;
-
         const cursorX = e.clientX - rect.left;
         const cursorY = e.clientY - rect.top;
-        const svgCursorX = vx + (cursorX / rect.width) * width;
-        const svgCursorY = vy + (cursorY / rect.height) * height;
-
-        const newZoom = Math.max(0.1, Math.min(20, zoom * zoomFactor));
+        const svgCursorX = currentVx + (cursorX / rect.width) * currentWidth;
+        const svgCursorY = currentVy + (cursorY / rect.height) * currentHeight;
+        const newZoom = Math.max(0.1, Math.min(20, currentZoom * zoomFactor));
         const newWidth = baseViewSize * newZoom;
         const newHeight = baseViewSize * newZoom;
-
         const newVx = svgCursorX - (cursorX / rect.width) * newWidth;
         const newVy = svgCursorY - (cursorY / rect.height) * newHeight;
-
-        setZoom(newZoom);
-        setPan({ x: newVx + newWidth / 2, y: newVy + newHeight / 2 });
+        zoomRef.current = newZoom;
+        panRef.current = { x: newVx + newWidth / 2, y: newVy + newHeight / 2 };
       } else {
         // Two-finger pan (trackpad) or mouse wheel scroll.
         // Convert screen-pixel delta to world coordinates using the
         // world-to-screen ratio (scales with zoom level).
-        const worldPerPixel = width / rect.width;
-        const dx = e.deltaX * worldPerPixel * settings.panSensitivity;
-        const dy = e.deltaY * worldPerPixel * settings.panSensitivity;
-        setPan(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+        const worldPerPixel = currentWidth / rect.width;
+        panRef.current = {
+          x: currentPan.x + e.deltaX * worldPerPixel * settings.panSensitivity,
+          y: currentPan.y + e.deltaY * worldPerPixel * settings.panSensitivity
+        };
       }
+      queueViewUpdate();
     };
     svg.addEventListener('wheel', onWheel, { passive: false });
     return () => svg.removeEventListener('wheel', onWheel);
-  }, [zoom, vx, vy, width, height, settings, cancelViewAnimation]);
+  }, [settings.zoomSensitivity, settings.panSensitivity, cancelViewAnimation, markViewInteraction, queueViewUpdate]);
 
   // Re-evaluate hover at the last known mouse position, skipping passed-through targets.
   // Used both by pointermove and the P key handler so hover updates immediately.
@@ -276,6 +335,14 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
     window.dispatchEvent(new CustomEvent('tooltip-reevaluate', { detail: { x, y, element: tooltipElement } }));
   }, [setHovered, clearPassThrough]);
 
+  const queueHoverEvaluation = React.useCallback(() => {
+    if (hoverFrameRef.current !== null) return;
+    hoverFrameRef.current = requestAnimationFrame(() => {
+      hoverFrameRef.current = null;
+      reevaluateHover();
+    });
+  }, [reevaluateHover]);
+
   // Pass-through keyboard shortcut: press P to pass through the currently hovered target
   React.useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -286,11 +353,11 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
       passThroughContactRef.current = { ...lastMouseRef.current };
       pushPassThrough(JSON.stringify(hovered));
       // Immediately re-evaluate hover so the item below is highlighted without moving the mouse
-      requestAnimationFrame(reevaluateHover);
+      queueHoverEvaluation();
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [pushPassThrough, reevaluateHover]);
+  }, [pushPassThrough, queueHoverEvaluation]);
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     cancelViewAnimation();
@@ -362,7 +429,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
     }
 
     setIsDragging(true);
-    setLastMouse({ x: e.clientX, y: e.clientY });
+    panMouseRef.current = { x: e.clientX, y: e.clientY };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   
@@ -378,20 +445,23 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
     // Hover logic — use elementsFromPoint to find all targets at this point,
     // then skip any that are in the pass-through stack.
     if (!isDragging && !activeDrag) {
-      reevaluateHover();
+      queueHoverEvaluation();
     }
 
     if (!isDragging) return;
-    const dx = e.clientX - lastMouse.x;
-    const dy = e.clientY - lastMouse.y;
+    const dx = e.clientX - panMouseRef.current.x;
+    const dy = e.clientY - panMouseRef.current.y;
     
     if (svgRef.current) {
       const rect = svgRef.current.getBoundingClientRect();
-      const scaleX = width / rect.width;
-      const scaleY = height / rect.height;
-      setPan(prev => ({ x: prev.x - dx * scaleX, y: prev.y - dy * scaleY }));
+      const currentWidth = baseViewSize * zoomRef.current;
+      panRef.current = {
+        x: panRef.current.x - dx * currentWidth / rect.width,
+        y: panRef.current.y - dy * currentWidth / rect.height
+      };
+      queueViewUpdate();
     }
-    setLastMouse({ x: e.clientX, y: e.clientY });
+    panMouseRef.current = { x: e.clientX, y: e.clientY };
   };
   
   const handlePointerUp = (e: React.PointerEvent) => {
@@ -456,7 +526,8 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
             width={bgSize} 
             height={bgSize} 
             opacity={bgOpacity} 
-            preserveAspectRatio="none" 
+            preserveAspectRatio="none"
+            style={{ imageRendering: interactionActive && !policy.effectsDuringInteraction ? 'pixelated' : 'auto' }}
             pointerEvents="none"
           />
         )}
@@ -473,15 +544,15 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
             <circle cx={toolPointer.x} cy={toolPointer.y} r={3.5 * zoom} fill="#2563eb" />
           </g>
         )}
-        <GeometryLayer config={draftConfig || committedConfig} segments={segments} zoom={zoom} />
+        <GeometryLayer config={renderConfig} segments={segments} effectsEnabled={effectsEnabled} visibleBounds={visibleBounds} />
         {viewMode !== 'segment' && (
-          <MarkingsLayer config={draftConfig || committedConfig} segments={segments} />
+          <MarkingsLayer config={renderConfig} segments={segments} defer={Boolean(activeDrag?.active) && !policy.markingsDuringDrag} visibleBounds={visibleBounds} />
         )}
-        <CenterlineLayer config={draftConfig || committedConfig} zoom={zoom} />
-        <LaneProfileLayer zoom={zoom} onSmartZoom={smartZoom} />
-        <HandlesLayer zoom={zoom} segments={segments} />
+        <CenterlineLayer config={draftConfig || committedConfig} zoom={zoom} effectsEnabled={effectsEnabled} />
+        {viewDetailsEnabled && <LaneProfileLayer zoom={zoom} onSmartZoom={smartZoom} />}
+        {(viewDetailsEnabled || activeDrag?.active) && <HandlesLayer zoom={zoom} segments={segments} />}
       </svg>
-      {selection?.kind === 'ring' && svgRef.current && (() => {
+      {effectsEnabled && selection?.kind === 'ring' && svgRef.current && (() => {
         const ring = committedConfig.rings.find(candidate => candidate.id === selection.ringId);
         if (!ring) return null;
         const rect = svgRef.current.getBoundingClientRect();
@@ -512,7 +583,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
           />
         );
       })()}
-      {selection?.kind === 'profile-point' && svgRef.current && (() => {
+      {effectsEnabled && selection?.kind === 'profile-point' && svgRef.current && (() => {
         const svg = svgRef.current;
         const arm = committedConfig.arms.find(candidate => candidate.id === selection.armId);
         const position = arm && profilePointPosition(arm, selection.pointId);
@@ -547,7 +618,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
           />
         );
       })()}
-      {selection?.kind === 'arm' && svgRef.current && (() => {
+      {effectsEnabled && selection?.kind === 'arm' && svgRef.current && (() => {
         const svg = svgRef.current;
         const arm = (draftConfig || committedConfig).arms.find(a => a.id === selection.armId);
         if (!arm || arm.nodes.length === 0) return null;
@@ -610,7 +681,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
           </>
         );
       })()}
-      {selection?.kind === 'lane' && svgRef.current && (() => {
+      {effectsEnabled && selection?.kind === 'lane' && svgRef.current && (() => {
         const svg = svgRef.current;
         const arm = committedConfig.arms.find(candidate => candidate.id === selection.armId);
         const lane = selection.dir === 'in' ? arm?.lanesIn[selection.laneIndex] : arm?.lanesOut[selection.laneIndex];
@@ -637,7 +708,7 @@ export const Viewport: React.FC<Props> = ({ segments }) => {
           />
         );
       })()}
-      {selection?.kind === 'lane' && svgRef.current && (() => {
+      {effectsEnabled && selection?.kind === 'lane' && svgRef.current && (() => {
         const svg = svgRef.current;
         const config = draftConfig || committedConfig;
         const arm = config.arms.find(a => a.id === selection.armId);

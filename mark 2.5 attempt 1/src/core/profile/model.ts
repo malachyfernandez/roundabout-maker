@@ -97,13 +97,13 @@ export function interpolateProfile(profile: RoadProfilePoint[], distance: number
   };
 }
 
-export function sampleProfile(arm: ArmConfig, spline: CatmullRomSpline, sampleCount: number): { sections: ProfileSection[]; totalLength: number } {
+export function sampleProfile(arm: ArmConfig, spline: CatmullRomSpline, sampleCount: number): { samples: ReturnType<typeof sampleSpline>; sections: ProfileSection[]; totalLength: number } {
   const samples = sampleSpline(spline, sampleCount);
   const distances = [0];
   for (let i = 1; i < samples.length; i++) distances.push(distances[i - 1] + len(sub(samples[i].p, samples[i - 1].p)));
   const totalLength = distances[distances.length - 1];
   const profile = getRoadProfile(arm, totalLength);
-  return { sections: distances.map(distance => interpolateProfile(profile, distance)), totalLength };
+  return { samples, sections: distances.map(distance => interpolateProfile(profile, distance)), totalLength };
 }
 
 export function laneOffsetAt(section: ProfileSection, laneIndex: number, isEntry: boolean, isRHD: boolean): number {

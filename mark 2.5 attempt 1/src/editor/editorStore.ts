@@ -3,6 +3,7 @@ import { type RoundaboutConfig, type SelectionTarget } from '../config/types';
 import { type Vec2 } from '../math/vector';
 import { DEFAULT_CONFIG } from '../core/config';
 import { normalizeProfileAnchors } from '../core/profile/anchors';
+import { type PerformancePreset } from './performance';
 
 type DragState = {
   active: boolean;
@@ -12,6 +13,7 @@ type DragState = {
 export type ActiveTool = 'select' | 'add-road' | 'add-ring' | 'connect-bypass';
 
 export type Settings = {
+  performancePreset: PerformancePreset;
   zoomSensitivity: number;
   panSensitivity: number;
   smartZoom: boolean;
@@ -25,6 +27,7 @@ export type Settings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
+  performancePreset: 'balanced',
   zoomSensitivity: 0.83,
   panSensitivity: 1.0,
   smartZoom: true,
@@ -86,7 +89,11 @@ interface EditorState {
 const getStoredSettings = (): Settings => {
   try {
     const saved = localStorage.getItem('roundabout_settings');
-    if (saved) return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
+    if (saved) {
+      const parsed = JSON.parse(saved) as Partial<Settings>;
+      const performancePreset = parsed.performancePreset && ['live', 'balanced', 'release'].includes(parsed.performancePreset) ? parsed.performancePreset : DEFAULT_SETTINGS.performancePreset;
+      return { ...DEFAULT_SETTINGS, ...parsed, performancePreset };
+    }
   } catch {}
   return DEFAULT_SETTINGS;
 };
@@ -108,7 +115,32 @@ const getStoredConfig = () => {
 
 const MAX_HISTORY = 50;
 
-export const useEditorStore = create<EditorState>((set, get) => ({
+const sameTarget = (a: SelectionTarget | null, b: SelectionTarget | null) => {
+  if (a === b) return true;
+  if (!a || !b || a.kind !== b.kind) return false;
+  if (a.kind === 'island' || b.kind === 'island') return true;
+  if (a.kind === 'ring' && b.kind === 'ring') return a.ringId === b.ringId;
+  if (a.kind === 'arm' && b.kind === 'arm') return a.armId === b.armId;
+  if (a.kind === 'profile-point' && b.kind === 'profile-point') return a.armId === b.armId && a.pointId === b.pointId;
+  return a.kind === 'lane' && b.kind === 'lane' && a.armId === b.armId && a.dir === b.dir && a.laneIndex === b.laneIndex;
+};
+
+export const useEditorStore = create<EditorState>((set, get) => {
+  let pendingDraft: RoundaboutConfig | null | undefined;
+  let draftFrame: number | null = null;
+  const cancelDraftFrame = () => {
+    if (draftFrame !== null) cancelAnimationFrame(draftFrame);
+    draftFrame = null;
+  };
+  const flushDraft = () => {
+    if (pendingDraft === undefined) return;
+    const draftConfig = pendingDraft;
+    pendingDraft = undefined;
+    cancelDraftFrame();
+    set({ draftConfig });
+  };
+
+  return {
   committedConfig: normalizeProfileAnchors(getStoredConfig()),
   draftConfig: null,
   selection: null,
@@ -125,6 +157,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   toasts: [],
 
   setCommittedConfig: (config) => {
+    pendingDraft = undefined;
+    cancelDraftFrame();
     const { committedConfig, undoStack } = get();
     const normalized = normalizeProfileAnchors(config);
     const newUndoStack = [...undoStack, structuredClone(committedConfig)].slice(-MAX_HISTORY);
@@ -132,9 +166,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set({ committedConfig: normalized, undoStack: newUndoStack, redoStack: [] });
   },
 
-  setDraftConfig: (config) => set({ draftConfig: config }),
-  setSelection: (sel) => set({ selection: sel }),
-  setHovered: (sel) => set({ hovered: sel }),
+  setDraftConfig: (config) => {
+    if (config === null || !get().drag?.active) {
+      pendingDraft = undefined;
+      cancelDraftFrame();
+      set({ draftConfig: config });
+      return;
+    }
+    pendingDraft = config;
+    if (draftFrame === null) draftFrame = requestAnimationFrame(flushDraft);
+  },
+  setSelection: (selection) => {
+    if (!sameTarget(get().selection, selection)) set({ selection });
+  },
+  setHovered: (hovered) => {
+    if (!sameTarget(get().hovered, hovered)) set({ hovered });
+  },
   setDrag: (drag) => set({ drag }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setActiveTool: (activeTool) => set({ activeTool, pendingRoadStart: null, pendingBypassSource: activeTool === 'connect-bypass' ? get().pendingBypassSource : null }),
@@ -147,6 +194,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   commitDraft: () => {
+    flushDraft();
     const { draftConfig, committedConfig, undoStack } = get();
     if (draftConfig) {
       const normalized = normalizeProfileAnchors(draftConfig);
@@ -157,6 +205,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   resetToDefault: () => {
+    pendingDraft = undefined;
+    cancelDraftFrame();
     const { committedConfig, undoStack } = get();
     const config = normalizeProfileAnchors(structuredClone(DEFAULT_CONFIG));
     const newUndoStack = [...undoStack, structuredClone(committedConfig)].slice(-MAX_HISTORY);
@@ -169,6 +219,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   undo: () => {
+    pendingDraft = undefined;
+    cancelDraftFrame();
     const { undoStack, committedConfig, redoStack } = get();
     if (undoStack.length === 0) return;
     const previous = undoStack[undoStack.length - 1];
@@ -178,6 +230,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   redo: () => {
+    pendingDraft = undefined;
+    cancelDraftFrame();
     const { redoStack, committedConfig, undoStack } = get();
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
@@ -224,4 +278,5 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   removePassThrough: (target) => set(state => ({
     passThroughStack: state.passThroughStack.filter(t => t !== target)
   }))
-}));
+  };
+});

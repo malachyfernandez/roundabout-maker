@@ -4,6 +4,7 @@ import { type ResolvedSegment } from '../core/solver';
 import { type Polyline, type Arc, type Line, arcPoint, linePoint, arcTangent } from '../geometry/primitives';
 import { useEditorStore } from '../editor/editorStore';
 import { isRightTurnPair, isValidBypassLanePair } from '../core/bypass';
+import { boundsIntersect, offsetBounds, resolvedSegmentBounds, type Bounds } from '../rendering/bounds';
 
 function generateVariableWidthPath(seg: ResolvedSegment): string {
   const pts: { p: Vec2, normal: Vec2 }[] = [];
@@ -76,10 +77,11 @@ import { type RoundaboutConfig } from '../config/types';
 type Props = {
   config: RoundaboutConfig;
   segments: ResolvedSegment[];
-  zoom: number;
+  effectsEnabled: boolean;
+  visibleBounds: Bounds;
 };
 
-export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zoom }) => {
+export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, effectsEnabled, visibleBounds }) => {
   const island = config.island;
   const selection = useEditorStore(state => state.selection);
   const hovered = useEditorStore(state => state.hovered);
@@ -87,11 +89,15 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
   const activeTool = useEditorStore(state => state.activeTool);
   const pendingBypassSource = useEditorStore(state => state.pendingBypassSource);
   const drag = useEditorStore(state => state.drag);
-
-  const matches = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
+  const segmentRenderData = React.useMemo(() => new Map(segments.map(segment => [segment, {
+    d: generateVariableWidthPath(segment),
+    bounds: resolvedSegmentBounds(segment)
+  }])), [segments]);
+  const localVisibleBounds = React.useMemo(() => offsetBounds(visibleBounds, { x: -island.center.x, y: -island.center.y }), [island.center.x, island.center.y, visibleBounds]);
+  const visibleSegments = React.useMemo(() => segments.filter(segment => boundsIntersect(segmentRenderData.get(segment)!.bounds, localVisibleBounds)), [localVisibleBounds, segmentRenderData, segments]);
 
   const renderSegment = (seg: ResolvedSegment) => {
-    const d = generateVariableWidthPath(seg);
+    const d = segmentRenderData.get(seg)?.d ?? '';
     if (!d) return null;
     let dCenter = "";
     if (seg.geom.kind === "line") {
@@ -201,9 +207,10 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
           d={d}
           fill={fillColor}
           stroke={strokeHighlight || "none"}
-          strokeWidth={strokeHighlight ? (isSelected || isBypassCandidate ? 4 : 2) * zoom : 0}
+          strokeWidth={strokeHighlight ? (isSelected || isBypassCandidate ? 4 : 2) : 0}
+          vectorEffect="non-scaling-stroke"
           opacity={opacity}
-          filter={isRendered ? undefined : 'url(#lane-shadow)'}
+          filter={!isRendered && effectsEnabled ? 'url(#lane-shadow)' : undefined}
           data-target={JSON.stringify(seg.source)}
           data-bypass-candidate={isBypassCandidate ? 'true' : undefined}
           data-tooltip={sourceTooltip}
@@ -224,7 +231,8 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
             d={d}
             fill="#22c55e"
             stroke="#22c55e"
-            strokeWidth={3 * zoom}
+            strokeWidth={3}
+            vectorEffect="non-scaling-stroke"
             opacity={0.24}
             pointerEvents="none"
           />
@@ -234,7 +242,8 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
             d={dCenter}
             fill="none"
             stroke="rgba(0,0,0,0.5)"
-            strokeWidth={1 * zoom}
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
             strokeLinecap="butt"
             pointerEvents="none"
           />
@@ -262,15 +271,15 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
     );
   };
 
-  const islandSelected = matches(selection, { kind: 'island' });
-  const islandHovered = matches(hovered, { kind: 'island' });
+  const islandSelected = selection?.kind === 'island';
+  const islandHovered = hovered?.kind === 'island';
   const islandHighlight = islandSelected ? '#ffeb3b' : islandHovered ? '#ffffff' : '#999';
 
   return (
     <g transform={`translate(${island.center.x || 0}, ${island.center.y || 0})`}>
       <defs>
         <filter id="lane-shadow" x="-20%" y="-20%" width="140%" height="140%">
-          <feDropShadow dx={0} dy={1.5 * zoom} stdDeviation={1.5 * zoom} floodColor="#000" floodOpacity={0.35} />
+          <feDropShadow dx={0} dy={1.5} stdDeviation={1.5} floodColor="#000" floodOpacity={0.35} />
         </filter>
       </defs>
       <circle 
@@ -279,10 +288,11 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, zo
         r={island.radius} 
         fill="#ccc" 
         stroke={islandHighlight}
-        strokeWidth={islandSelected || islandHovered ? 4 * zoom : 0.5 * zoom} 
+        strokeWidth={islandSelected || islandHovered ? 4 : 0.5}
+        vectorEffect="non-scaling-stroke"
         data-target={JSON.stringify({ kind: 'island' })}
       />
-      {segments.map(renderSegment)}
+      {visibleSegments.map(renderSegment)}
     </g>
   );
 });
