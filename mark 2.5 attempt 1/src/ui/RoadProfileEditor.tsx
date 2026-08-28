@@ -18,13 +18,18 @@ import { ProfileAddLaneMarker } from '../profile/ProfileAddLaneMarker';
 import { ProfileControlIcon } from '../profile/ProfileControlIcon';
 import { ProfileTransitionMarker } from '../profile/ProfileTransitionMarker';
 import { profileControlColor } from '../profile/controlAppearance';
+import { convertAnchorToCopy } from '../core/profile/anchors';
 import {
   profileControlValue,
   profileLaneInsertIndices,
+  profileLaneStartEndMovers,
+  profileLaneTotalOffset,
   profileSideOuter,
   profileTransitionSection,
   profileTransitionTargets,
+  snapProfileLaneGap,
   snapProfileLaneWidth,
+  type GapSnapMatch,
   type ProfileDirection
 } from '../profile/editorMath';
 
@@ -85,7 +90,9 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
   const drag = React.useRef<DragTarget | null>(null);
   const [ghostDistance, setGhostDistance] = React.useState<number | null>(null);
   const [transitionDrag, setTransitionDrag] = React.useState<TransitionDrag | null>(null);
+  const [isDragging, setIsDragging] = React.useState(false);
   const [widthSnapMatches, setWidthSnapMatches] = React.useState<{ dir: Direction; laneIndex: number }[]>([]);
+  const [gapSnapMatches, setGapSnapMatches] = React.useState<GapSnapMatch[]>([]);
   const transitionMagnetRef = React.useRef<number | null>(null);
   if (!arm || !selected) return null;
 
@@ -105,10 +112,11 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
     return { x: CENTER_X + sign * (bounds.inner + (bounds.outer - bounds.inner) / 2) * xScale, y: yForDistance(section.distance) };
   };
 
-  const startDrag = (event: React.PointerEvent<SVGElement>, target: Omit<Extract<DragTarget, { kind: 'distance' }>, 'original'> | Omit<Extract<DragTarget, { kind: 'control' }>, 'original'> | Omit<Extract<DragTarget, { kind: 'transition' }>, 'original'>) => {
+  const startDrag = (event: React.PointerEvent<SVGElement>, target: Omit<Extract<DragTarget, { kind: 'distance' }>, 'original'> | Omit<Extract<DragTarget, { kind: 'control' }>, 'original'> | Omit<Extract<DragTarget, { kind: 'transition' }>, 'original'>, originalOverride?: RoundaboutConfig) => {
     event.preventDefault();
     event.stopPropagation();
-    drag.current = { ...target, original: structuredClone(config) } as DragTarget;
+    drag.current = { ...target, original: structuredClone(originalOverride ?? config) } as DragTarget;
+    setIsDragging(true);
     event.currentTarget.closest('svg')?.setPointerCapture(event.pointerId);
   };
 
@@ -154,6 +162,16 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
       const snapped = snapProfileLaneWidth(sourcePoint, state.dir, state.laneIndex, value);
       value = snapped.value;
       setWidthSnapMatches(snapped.matches);
+      setGapSnapMatches([]);
+    } else {
+      const sourceProfile = getRoadProfile(sourceArm, estimateArmLength(sourceArm));
+      const originalLane = (state.dir === 'in' ? sourcePoint.lanesIn : sourcePoint.lanesOut)[state.laneIndex];
+      const originalOffset = profileLaneTotalOffset(sourcePoint, state.dir, state.laneIndex);
+      const currentOffset = originalOffset - (originalLane?.gap ?? 0) + value;
+      const snapped = snapProfileLaneGap(sourceProfile, state.pointId, state.dir, state.laneIndex, currentOffset);
+      if (snapped.matches.length) value = (originalLane?.gap ?? 0) + (snapped.totalOffset - originalOffset);
+      setGapSnapMatches(snapped.matches);
+      setWidthSnapMatches([]);
     }
     onChange(setProfileControl(state.original, armId, state.pointId, state.dir, state.control, Math.max(0, value), state.laneIndex));
   };
@@ -166,7 +184,9 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
     drag.current = null;
     transitionMagnetRef.current = null;
     setTransitionDrag(null);
+    setIsDragging(false);
     setWidthSnapMatches([]);
+    setGapSnapMatches([]);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
@@ -213,7 +233,13 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
           const endpointTooltip = !isSelected ? 'Select point.' : internal ? 'Drag to move.' : 'Move point.';
           const startPointDrag = (event: React.PointerEvent<SVGElement>) => {
             setSelection({ kind: 'profile-point', armId, pointId: point.id });
-            startDrag(event, { kind: 'distance', pointId: point.id, startDistance: point.distance, moved: false });
+            if (point.endAnchor) {
+              const converted = convertAnchorToCopy(config, armId, point.id);
+              onChange(converted);
+              startDrag(event, { kind: 'distance', pointId: point.id, startDistance: point.distance, moved: false }, converted);
+            } else {
+              startDrag(event, { kind: 'distance', pointId: point.id, startDistance: point.distance, moved: false });
+            }
           };
           return (
             <g key={point.id}>
@@ -224,31 +250,33 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
             </g>
           );
         })}
-        {(['in', 'out'] as const).flatMap(dir => profileLaneTransitions(profile, dir).map(transition => {
+        {(!isDragging || transitionDrag) && (['in', 'out'] as const).flatMap(dir => profileLaneTransitions(profile, dir).map(transition => {
           const home = transitionPosition(dir, transition.laneIndex, transition.boundaryIndex);
           const state = drag.current;
           const dragging = state?.kind === 'transition' && state.dir === dir && state.laneIndex === transition.laneIndex && state.boundaryIndex === transition.boundaryIndex;
           const center = dragging && transitionDrag ? transitionDrag : { ...home, sourceBoundary: transition.boundaryIndex, targetBoundary: null };
           const added = dir === 'out' ? transition.toPresent : transition.fromPresent;
           const targets = dragging ? profileTransitionTargets(profile, dir, transition.laneIndex, transition.boundaryIndex) : [];
+          const isSnapped = transitionDrag?.targetBoundary !== null && transitionDrag?.targetBoundary !== undefined;
           return (
             <g key={`${dir}-${transition.laneIndex}-transition-${transition.boundaryIndex}`}>
               {targets.map(boundaryIndex => {
                 const point = transitionPosition(dir, transition.laneIndex, boundaryIndex, transition.boundaryIndex);
                 const active = transitionDrag?.targetBoundary === boundaryIndex;
-                return <circle key={boundaryIndex} cx={point.x} cy={point.y} r={active ? 8 : 6} fill={active ? '#ede9fe' : '#fff'} stroke="#7c3aed" strokeWidth={active ? 3 : 2} strokeDasharray={active ? undefined : '3 2'} pointerEvents="none" />;
+                return <circle key={boundaryIndex} cx={point.x} cy={point.y} r={active ? 8 : 6} fill={active ? '#dcfce7' : '#fff'} stroke="#22c55e" strokeWidth={active ? 3 : 2} strokeDasharray={active ? undefined : '4 3'} pointerEvents="none" />;
               })}
-              {dragging && transitionDrag && Math.hypot(center.x - home.x, center.y - home.y) > 1 && <line x1={home.x} y1={home.y} x2={center.x} y2={center.y} stroke="#7c3aed" strokeWidth="2" strokeDasharray="5 4" strokeLinecap="round" opacity={transitionDrag.targetBoundary === null ? .55 : .9} pointerEvents="none" />}
+              {dragging && transitionDrag && Math.hypot(center.x - home.x, center.y - home.y) > 1 && <line x1={home.x} y1={home.y} x2={center.x} y2={center.y} stroke="#22c55e" strokeWidth="2" strokeDasharray="5 4" strokeLinecap="round" opacity={isSnapped ? .9 : .55} pointerEvents="none" />}
               <g
                 transform={`translate(${center.x} ${center.y})`}
                 cursor="grab"
+                style={dragging && isSnapped ? { transition: 'transform 110ms cubic-bezier(0.2, 1.45, 0.4, 1)' } : undefined}
                 onPointerDown={event => {
                   transitionMagnetRef.current = null;
                   setTransitionDrag({ sourceBoundary: transition.boundaryIndex, targetBoundary: null, ...home });
                   startDrag(event, { kind: 'transition', dir, laneIndex: transition.laneIndex, boundaryIndex: transition.boundaryIndex });
                 }}
               >
-                <ProfileTransitionMarker added={added} tooltip={added ? 'Move lane start.' : 'Move lane end.'} />
+                <ProfileTransitionMarker added={added} tooltip={added ? 'Move lane start.' : 'Move lane end.'} color={profileControlColor(transition.laneIndex)} dragging={dragging} snapped={isSnapped} />
               </g>
             </g>
           );
@@ -263,8 +291,19 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
             return <line key={`width-snap-${dir}-${laneIndex}`} x1={innerX} y1={y} x2={outerX} y2={y} stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" pointerEvents="none" />;
           });
         })()}
-        {(() => {
+        {gapSnapMatches.length > 0 && gapSnapMatches.flatMap(({ pointId, dir, laneIndex }) => {
+          const matchPoint = profile.find(candidate => candidate.id === pointId);
+          if (!matchPoint) return [];
+          const y = yForDistance(matchPoint.distance);
+          const sign = dir === 'in' ? -1 : 1;
+          const bounds = laneBounds(matchPoint, dir, laneIndex);
+          const innerX = CENTER_X + sign * bounds.inner * xScale;
+          const outerX = CENTER_X + sign * bounds.outer * xScale;
+          return [<line key={`gap-snap-${pointId}-${dir}-${laneIndex}`} x1={innerX} y1={y} x2={outerX} y2={y} stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" pointerEvents="none" />];
+        })}
+        {!isDragging && (() => {
           const y = yForDistance(selected.distance);
+          const selectedIndex = profile.findIndex(point => point.id === selected.id);
           const controls: React.ReactNode[] = [];
           for (const dir of ['in', 'out'] as const) {
             const sign = dir === 'in' ? -1 : 1;
@@ -287,6 +326,21 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
                   <ProfileControlIcon kind="width" color={color} transform={pointerTransform(widthX, y, travelY, sign, 4, 0, true)} />
                 </g>
               );
+              for (const mover of profileLaneStartEndMovers(profile, dir, laneIndex, selectedIndex)) {
+                const moverPoint = profile.find(candidate => candidate.id === mover.pointId);
+                const moverLane = moverPoint && (dir === 'in' ? moverPoint.lanesIn : moverPoint.lanesOut)[laneIndex];
+                if (!moverPoint || !moverLane) continue;
+                const moverBounds = laneBounds(moverPoint, dir, laneIndex);
+                const moverX = CENTER_X + sign * (moverBounds.inner + moverLane.width / 2) * xScale;
+                const moverY = yForDistance(moverPoint.distance) + travelY * (mover.kind === 'start' ? 22 : -22);
+                const tooltip = mover.kind === 'start' ? 'Shift lane start.' : 'Shift lane end.';
+                controls.push(
+                  <g key={`${dir}-${laneIndex}-${mover.kind}-mover-${mover.pointId}`} cursor="grab" onPointerDown={event => startDrag(event, { kind: 'control', pointId: moverPoint.id, dir, control: 'gap', laneIndex })}>
+                    <circle cx={moverX} cy={moverY} r="9" fill="transparent" data-handle="true" data-tooltip={tooltip} />
+                    <ProfileControlIcon kind="gap" color={color} transform={pointerTransform(moverX, moverY, travelY, sign, 4, 4)} />
+                  </g>
+                );
+              }
             });
             const insertIndices = profileLaneInsertIndices(selected, dir);
             for (const insertIndex of insertIndices) {
@@ -310,7 +364,7 @@ export const RoadProfileEditor: React.FC<Props> = ({ config, armId, onChange }) 
         <span><strong>{Math.round(selected.distance)} ft</strong> lane point</span>
         <span>Edits continue to the next downstream point</span>
         <button
-          disabled={profile.length <= 2 || selected.id === profile[0].id || selected.id === profile[profile.length - 1].id}
+          disabled={profile.length <= 2 || !!selected.endAnchor}
           data-tooltip="Delete point."
           onClick={() => { onChange(removeProfilePoint(config, armId, selected.id)); setSelection({ kind: 'arm', armId }); }}
         >Delete point</button>

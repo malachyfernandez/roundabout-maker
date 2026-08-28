@@ -48,7 +48,24 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
   const [activeMagnet, setActiveMagnet] = React.useState<ConnectionMagnet | null>(null);
   const [activeEndpoint, setActiveEndpoint] = React.useState<RoadEndpoint | null>(null);
   const magnetRef = React.useRef<ConnectionMagnet | null>(null);
+  const setDrag = useEditorStore(state => state.setDrag);
+  const commitDraft = useEditorStore(state => state.commitDraft);
+  const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const config = draftConfig || committedConfig;
+
+  // Safety net: when a Handle unmounts during a drag (because isDragging hides
+  // all gizmos), its internal pointerup handler never fires. This window-level
+  // listener ensures the drag is always cleaned up.
+  React.useEffect(() => {
+    if (!drag?.active) return;
+    const handleUp = () => {
+      commitDraft();
+      setDrag(null);
+      setDraftConfig(null);
+    };
+    window.addEventListener('pointerup', handleUp, { once: true });
+    return () => window.removeEventListener('pointerup', handleUp);
+  }, [drag?.active, commitDraft, setDrag, setDraftConfig]);
   const ringSnapPoints = React.useMemo(() => ({
     start: selection?.kind === 'lane' ? getLaneRingSnapPoints(committedConfig, selection.armId, selection.dir, selection.laneIndex, 'start') : [],
     end: selection?.kind === 'lane' ? getLaneRingSnapPoints(committedConfig, selection.armId, selection.dir, selection.laneIndex, 'end') : []
@@ -139,6 +156,7 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
   };
   const connectionHome = activeEndpoint ? connectionHomes[activeEndpoint] : null;
   const isRingSnapDragging = drag?.active && drag?.type === 'lane-ring-snap';
+  const isDragging = Boolean(drag?.active);
   const sameLane = (a: LaneTarget, b: LaneTarget) => a.armId === b.armId && a.dir === b.dir && a.laneIndex === b.laneIndex;
 
   const clearDragFeedback = () => {
@@ -270,8 +288,9 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
         />
       )}
 
-      {/* All gizmos below are hidden while dragging the ring-snap handle */}
-      {!isRingSnapDragging && (
+      {/* All gizmos below are visually hidden during any drag, but kept mounted
+          so the dragged Handle retains its pointer capture and drag lifecycle. */}
+      <g style={{ opacity: isDragging ? 0 : 1, pointerEvents: isDragging ? 'none' : 'auto' }}>
         <>
           {showIslandCenter && (
             <>
@@ -482,8 +501,8 @@ export const HandlesLayer: React.FC<Props> = ({ zoom, segments }) => {
             />
           ))}
         </>
-      )}
-      {selectedLane && (['start', 'end'] as const).map(endpoint => {
+      </g>
+      {(!isDragging || isRingSnapDragging) && selectedLane && (['start', 'end'] as const).map(endpoint => {
         const home = connectionHomes[endpoint];
         if (!home) return null;
         return (

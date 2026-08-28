@@ -62,14 +62,15 @@ export function createDefaultProfile(arm: ArmConfig, totalLength?: number): Road
     distance: distances[index] * factor,
     medianWidth: node.medianWidth,
     lanesIn: node.laneWidthsIn.map(width => ({ width, gap: 0 })),
-    lanesOut: node.laneWidthsOut.map(width => ({ width, gap: 0 }))
+    lanesOut: node.laneWidthsOut.map(width => ({ width, gap: 0 })),
+    endAnchor: index === 0 ? 'start' as const : index === arm.nodes.length - 1 ? 'end' as const : undefined
   }));
 }
 
 export function getRoadProfile(arm: ArmConfig, totalLength: number): RoadProfilePoint[] {
   const source = arm.profile && arm.profile.length > 0 ? arm.profile : createDefaultProfile(arm, totalLength);
   const sorted = structuredClone(source).sort((a, b) => a.distance - b.distance);
-  if (sorted.length === 1) sorted.push({ ...structuredClone(sorted[0]), id: `${sorted[0].id}_end`, distance: totalLength });
+  if (sorted.length === 1) sorted.push({ ...structuredClone(sorted[0]), id: `${sorted[0].id}_end`, distance: totalLength, endAnchor: 'end' as const });
   return sorted;
 }
 

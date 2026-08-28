@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { type RoundaboutConfig, type SelectionTarget } from '../config/types';
 import { type Vec2 } from '../math/vector';
 import { DEFAULT_CONFIG } from '../core/config';
+import { normalizeProfileAnchors } from '../core/profile/anchors';
 
 type DragState = {
   active: boolean;
@@ -108,7 +109,7 @@ const getStoredConfig = () => {
 const MAX_HISTORY = 50;
 
 export const useEditorStore = create<EditorState>((set, get) => ({
-  committedConfig: getStoredConfig(),
+  committedConfig: normalizeProfileAnchors(getStoredConfig()),
   draftConfig: null,
   selection: null,
   hovered: null,
@@ -125,9 +126,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setCommittedConfig: (config) => {
     const { committedConfig, undoStack } = get();
+    const normalized = normalizeProfileAnchors(config);
     const newUndoStack = [...undoStack, structuredClone(committedConfig)].slice(-MAX_HISTORY);
-    localStorage.setItem('roundabout_config', JSON.stringify(config));
-    set({ committedConfig: config, undoStack: newUndoStack, redoStack: [] });
+    localStorage.setItem('roundabout_config', JSON.stringify(normalized));
+    set({ committedConfig: normalized, undoStack: newUndoStack, redoStack: [] });
   },
 
   setDraftConfig: (config) => set({ draftConfig: config }),
@@ -147,15 +149,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   commitDraft: () => {
     const { draftConfig, committedConfig, undoStack } = get();
     if (draftConfig) {
+      const normalized = normalizeProfileAnchors(draftConfig);
       const newUndoStack = [...undoStack, structuredClone(committedConfig)].slice(-MAX_HISTORY);
-      localStorage.setItem('roundabout_config', JSON.stringify(draftConfig));
-      set({ committedConfig: draftConfig, draftConfig: null, drag: null, undoStack: newUndoStack, redoStack: [] });
+      localStorage.setItem('roundabout_config', JSON.stringify(normalized));
+      set({ committedConfig: normalized, draftConfig: null, drag: null, undoStack: newUndoStack, redoStack: [] });
     }
   },
 
   resetToDefault: () => {
     const { committedConfig, undoStack } = get();
-    const config = structuredClone(DEFAULT_CONFIG);
+    const config = normalizeProfileAnchors(structuredClone(DEFAULT_CONFIG));
     const newUndoStack = [...undoStack, structuredClone(committedConfig)].slice(-MAX_HISTORY);
     localStorage.setItem('roundabout_config', JSON.stringify(config));
     for (const key of ['roundabout_bg', 'roundabout_bgOp', 'roundabout_bgSize', 'roundabout_pan', 'roundabout_zoom']) {

@@ -1,8 +1,28 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { type RoundaboutConfig } from '../config/types';
 import { useEditorStore } from '../editor/editorStore';
 import { RoadProfileEditor } from './RoadProfileEditor';
 import { MARKING_RULES } from '../rendering/markings';
+
+const STORAGE_PREFIX = 'roundabout_';
+
+/** Collect every persisted `roundabout_*` localStorage entry into one object. */
+const exportPersistedState = (): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(STORAGE_PREFIX)) out[key] = localStorage.getItem(key) ?? '';
+  }
+  return out;
+};
+
+/** Write a previously exported state object back into localStorage. */
+const importPersistedState = (data: Record<string, string>) => {
+  for (const key of Object.keys(data)) {
+    if (!key.startsWith(STORAGE_PREFIX)) continue;
+    localStorage.setItem(key, data[key]);
+  }
+};
 
 type Props = {
   config: RoundaboutConfig;
@@ -17,6 +37,37 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
   const setActiveTool = useEditorStore(state => state.setActiveTool);
   const setPendingBypassSource = useEditorStore(state => state.setPendingBypassSource);
   const viewMode = useEditorStore(state => state.viewMode);
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  const handleExport = () => {
+    const data = exportPersistedState();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'roundabout-export.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result)) as Record<string, string>;
+        if (typeof data !== 'object' || data === null) throw new Error('bad shape');
+        importPersistedState(data);
+        window.location.reload();
+      } catch {
+        window.alert('That file is not a valid roundabout export.');
+      }
+    };
+    reader.readAsText(file);
+    // reset so the same file can be picked again later
+    e.target.value = '';
+  };
 
   const handleChange = (updater: (draft: RoundaboutConfig) => void) => {
     const nextConfig = JSON.parse(JSON.stringify(config));
@@ -319,6 +370,27 @@ export const Sidebar: React.FC<Props> = ({ config, onChange, errors }) => {
       <h2 style={{marginTop: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
         Editor
         <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={handleExport}
+            data-tooltip="Download the current design, settings, and viewport as a JSON file."
+            style={{ fontSize: 12, padding: '4px 8px' }}
+          >
+            Export
+          </button>
+          <button
+            onClick={() => importInputRef.current?.click()}
+            data-tooltip="Load a previously exported JSON file. This replaces the current design."
+            style={{ fontSize: 12, padding: '4px 8px' }}
+          >
+            Import
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={handleImportFile}
+            style={{ display: 'none' }}
+          />
           <button
             onClick={() => {
               if (window.confirm('Reset the design, background, and viewport to their defaults?')) resetToDefault();

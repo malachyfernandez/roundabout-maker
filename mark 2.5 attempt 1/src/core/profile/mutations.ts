@@ -1,5 +1,5 @@
 import { type RoundaboutConfig } from '../../config/types';
-import { estimateArmLength, getRoadProfile, insertProfilePoint, isProfileLanePresent } from './model';
+import { estimateArmLength, getRoadProfile, insertProfilePoint, isProfileLanePresent, laneBounds } from './model';
 
 export function setProfileControl(
   original: RoundaboutConfig,
@@ -17,15 +17,50 @@ export function setProfileControl(
   arm.profile = getRoadProfile(arm, totalLength);
   const pointIndex = arm.profile.findIndex(point => point.id === pointId);
   if (pointIndex < 0) return next;
-  const downstreamIndex = pointIndex + (dir === 'out' ? 1 : -1);
-  for (const index of [pointIndex, downstreamIndex]) {
-    const point = arm.profile[index];
-    if (!point) continue;
-    if (kind === 'median') point.medianWidth = Math.max(0, value);
-    else {
-      const lane = (dir === 'in' ? point.lanesIn : point.lanesOut)[laneIndex];
-      if (lane) lane[kind] = Math.max(0, value);
+  const step = dir === 'out' ? 1 : -1;
+  if (kind === 'median') {
+    const downstreamIndex = pointIndex + step;
+    for (const index of [pointIndex, downstreamIndex]) {
+      const point = arm.profile[index];
+      if (point) point.medianWidth = Math.max(0, value);
     }
+    return next;
+  }
+  const selectedPoint = arm.profile[pointIndex];
+  const selectedLane = (dir === 'in' ? selectedPoint.lanesIn : selectedPoint.lanesOut)[laneIndex];
+  if (!selectedLane) return next;
+  const laneAt = (point: typeof selectedPoint) => (dir === 'in' ? point.lanesIn : point.lanesOut)[laneIndex];
+  const indices: number[] = [pointIndex];
+  if (kind === 'width') {
+    const originalWidth = selectedLane.width;
+    let cursor = pointIndex + step;
+    while (cursor >= 0 && cursor < arm.profile.length) {
+      const lane = laneAt(arm.profile[cursor]);
+      if (!lane || !isProfileLanePresent(lane) || Math.abs(lane.width - originalWidth) > .01) break;
+      indices.push(cursor);
+      cursor += step;
+    }
+    for (const index of indices) {
+      const lane = laneAt(arm.profile[index]);
+      if (lane) lane.width = Math.max(0, value);
+    }
+    return next;
+  }
+  const selectedOriginalOffset = laneBounds(selectedPoint, dir, laneIndex).inner - selectedPoint.medianWidth / 2;
+  const delta = value - selectedLane.gap;
+  let cursor = pointIndex + step;
+  while (cursor >= 0 && cursor < arm.profile.length) {
+    const point = arm.profile[cursor];
+    const lane = laneAt(point);
+    if (!lane || !isProfileLanePresent(lane)) break;
+    const offset = laneBounds(point, dir, laneIndex).inner - point.medianWidth / 2;
+    if (Math.abs(offset - selectedOriginalOffset) > .01) break;
+    indices.push(cursor);
+    cursor += step;
+  }
+  for (const index of indices) {
+    const lane = laneAt(arm.profile[index]);
+    if (lane) lane.gap = Math.max(0, lane.gap + delta);
   }
   return next;
 }
@@ -62,10 +97,9 @@ export function removeProfilePoint(original: RoundaboutConfig, armId: string, po
   const arm = next.arms.find(candidate => candidate.id === armId);
   if (!arm) return next;
   const profile = getRoadProfile(arm, estimateArmLength(arm));
+  const target = profile.find(point => point.id === pointId);
+  if (!target || target.endAnchor) return next;
   if (profile.length <= 2) return next;
-  const sorted = [...profile].sort((a, b) => a.distance - b.distance);
-  const index = sorted.findIndex(point => point.id === pointId);
-  if (index <= 0 || index >= sorted.length - 1) return next;
   arm.profile = profile.filter(point => point.id !== pointId);
   return next;
 }

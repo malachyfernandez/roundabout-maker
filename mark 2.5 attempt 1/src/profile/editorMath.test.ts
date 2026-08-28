@@ -3,9 +3,12 @@ import { type RoadProfilePoint } from '../config/types';
 import {
   profileControlValue,
   profileLaneInsertIndices,
+  profileLaneStartEndMovers,
+  profileLaneTotalOffset,
   profileSideOuter,
   profileTransitionSection,
   profileTransitionTargets,
+  snapProfileLaneGap,
   snapProfileLaneWidth
 } from './editorMath';
 
@@ -60,5 +63,46 @@ describe('profile editor math', () => {
     const section = profileTransitionSection(profile, 'in', 0, 1, 0);
     expect(section.distance).toBe(15);
     expect(section.lanesIn[0]).toEqual({ width: 5, gap: 2 });
+  });
+
+  it('computes the lane total offset as the inner edge relative to the median', () => {
+    const section: RoadProfilePoint = { id: 'a', distance: 0, medianWidth: 4, lanesIn: [], lanesOut: [{ width: 10, gap: 0 }, { width: 10, gap: 10 }] };
+    expect(profileLaneTotalOffset(section, 'out', 0)).toBe(0);
+    expect(profileLaneTotalOffset(section, 'out', 1)).toBe(20);
+  });
+
+  it('snaps a gap drag to the immediate neighbor total offsets and reports the matched neighbor', () => {
+    const profile: RoadProfilePoint[] = [
+      { id: 'a', distance: 0, medianWidth: 4, lanesIn: [], lanesOut: [{ width: 10, gap: 2 }] },
+      { id: 'b', distance: 10, medianWidth: 4, lanesIn: [], lanesOut: [{ width: 10, gap: 5 }] },
+      { id: 'c', distance: 20, medianWidth: 4, lanesIn: [], lanesOut: [{ width: 10, gap: 8 }] }
+    ];
+    expect(snapProfileLaneGap(profile, 'b', 'out', 0, 2.2)).toEqual({
+      totalOffset: 2,
+      matches: [{ pointId: 'a', dir: 'out', laneIndex: 0 }]
+    });
+    expect(snapProfileLaneGap(profile, 'b', 'out', 0, 5.1)).toEqual({ totalOffset: 5.1, matches: [] });
+  });
+
+  it('reports a start mover on the 0-width point before a present out-lane and an end mover on the 0-width point after', () => {
+    const profile = [
+      point('a', 0, [], [0]),
+      point('b', 10, [], [10]),
+      point('c', 20, [], [10]),
+      point('d', 30, [], [0])
+    ];
+    expect(profileLaneStartEndMovers(profile, 'out', 0, 1)).toEqual([{ pointId: 'a', kind: 'start' }]);
+    expect(profileLaneStartEndMovers(profile, 'out', 0, 2)).toEqual([{ pointId: 'd', kind: 'end' }]);
+  });
+
+  it('swaps start/end roles for in-lanes since travel runs toward decreasing distance', () => {
+    const profile = [
+      point('a', 0, [0], []),
+      point('b', 10, [10], []),
+      point('c', 20, [10], []),
+      point('d', 30, [0], [])
+    ];
+    expect(profileLaneStartEndMovers(profile, 'in', 0, 1)).toEqual([{ pointId: 'a', kind: 'end' }]);
+    expect(profileLaneStartEndMovers(profile, 'in', 0, 2)).toEqual([{ pointId: 'd', kind: 'start' }]);
   });
 });

@@ -47,6 +47,7 @@ export type RoadProfilePoint = {
   medianWidth: number;
   lanesIn: ProfileLane[];
   lanesOut: ProfileLane[];
+  endAnchor?: 'start' | 'end';
 };
 
 export type RightTurnBypass = {
