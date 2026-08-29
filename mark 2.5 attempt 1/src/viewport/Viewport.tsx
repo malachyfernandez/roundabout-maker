@@ -288,27 +288,28 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
     const pxPerWorld = svg.clientWidth / (baseViewSize * zoomRef.current * (1 + 2 * CULL_MARGIN_RATIO));
     const dxPx = worldDx * pxPerWorld;
     const dyPx = worldDy * pxPerWorld;
-    panPerfMark('rAF-apply', () => {
-      svg.style.transform = `translate(${dxPx}px, ${dyPx}px)`;
-    });
-    if (PAN_PERF.active) PAN_PERF.applies++;
+    // panPerfMark('rAF-apply', () => {
+    svg.style.transform = `translate(${dxPx}px, ${dyPx}px)`;
+    // });
+    // if (PAN_PERF.active) PAN_PERF.applies++;
   }, []);
 
   const commitTransientPan = React.useCallback(() => {
-    panPerfMark('rAF-commit', () => setPan(panRef.current));
-    if (PAN_PERF.active) PAN_PERF.commits++;
+    // panPerfMark('rAF-commit', () => setPan(panRef.current));
+    setPan(panRef.current);
+    // if (PAN_PERF.active) PAN_PERF.commits++;
   }, []);
 
   React.useLayoutEffect(() => {
-    panPerfMark('layout-effect', () => {
-      renderedPanRef.current = pan;
-      applyTransientPan();
-    });
+    // panPerfMark('layout-effect', () => {
+    renderedPanRef.current = pan;
+    applyTransientPan();
+    // });
   }, [applyTransientPan, pan, zoom]);
 
   React.useEffect(() => {
-    const svg = svgRef.current;
-    if (svg) (window as unknown as { __panPerfInstall?: (s: SVGSVGElement) => void }).__panPerfInstall?.(svg);
+    // const svg = svgRef.current;
+    // if (svg) (window as unknown as { __panPerfInstall?: (s: SVGSVGElement) => void }).__panPerfInstall?.(svg);
   }, []);
 
   const queueViewUpdate = React.useCallback(() => {
@@ -324,7 +325,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
     if (viewUpdateRef.current !== null) return;
     viewUpdateRef.current = requestAnimationFrame(() => {
       viewUpdateRef.current = null;
-      panPerfRecordFrame();
+      // panPerfRecordFrame();
       const limit = baseViewSize * zoomRef.current * CULL_MARGIN_RATIO * 0.75;
       const rendered = renderedPanRef.current;
       if (Math.abs(panRef.current.x - rendered.x) >= limit || Math.abs(panRef.current.y - rendered.y) >= limit) {
@@ -336,13 +337,13 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   }, [applyTransientPan, commitTransientPan]);
 
   const markViewInteraction = React.useCallback(() => {
-    panPerfStart();
+    // panPerfStart();
     setViewInteracting(true);
     if (viewIdleTimerRef.current !== null) clearTimeout(viewIdleTimerRef.current);
     viewIdleTimerRef.current = window.setTimeout(() => {
       viewIdleTimerRef.current = null;
       setViewInteracting(false);
-      panPerfScheduleReport('view-idle');
+      // panPerfScheduleReport('view-idle');
     }, 140);
   }, []);
 
@@ -381,16 +382,16 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
       if (speed < 0.002) {
         momentumRef.current = null;
         commitTransientPan();
-        panPerfScheduleReport('momentum-end');
+        // panPerfScheduleReport('momentum-end');
         return;
       }
-      panPerfMark('momentum', () => {
-        panRef.current = {
-          x: panRef.current.x + panVelocityRef.current.x * dt,
-          y: panRef.current.y + panVelocityRef.current.y * dt
-        };
-      });
-      if (PAN_PERF.active) PAN_PERF.momentumFrames++;
+      // panPerfMark('momentum', () => {
+      panRef.current = {
+        x: panRef.current.x + panVelocityRef.current.x * dt,
+        y: panRef.current.y + panVelocityRef.current.y * dt
+      };
+      // });
+      // if (PAN_PERF.active) PAN_PERF.momentumFrames++;
       markViewInteraction();
       queuePanPreview();
       momentumRef.current = requestAnimationFrame(animate);
@@ -457,8 +458,8 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
       e.preventDefault();
       cancelViewAnimation();
       markViewInteraction();
-      if (PAN_PERF.active) PAN_PERF.wheelEvents++;
-      panPerfMark('wheel', () => {
+      // if (PAN_PERF.active) PAN_PERF.wheelEvents++;
+      // panPerfMark('wheel', () => {
       const rect = (containerRef.current ?? svg).getBoundingClientRect();
       const currentZoom = zoomRef.current;
       const currentPan = panRef.current;
@@ -508,7 +509,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         }, 80);
         queuePanPreview();
       }
-      });
+      // });
     };
     svg.addEventListener('wheel', onWheel, { passive: false });
     return () => svg.removeEventListener('wheel', onWheel);
@@ -664,8 +665,8 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
     }
 
     if (!isDragging) return;
-    if (PAN_PERF.active) PAN_PERF.pointerMoves++;
-    panPerfMark('pointermove', () => {
+    // if (PAN_PERF.active) PAN_PERF.pointerMoves++;
+    // panPerfMark('pointermove', () => {
     const dx = e.clientX - panMouseRef.current.x;
     const dy = e.clientY - panMouseRef.current.y;
     
@@ -678,7 +679,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
       };
       queuePanPreview();
     }
-    });
+    // });
     panMouseRef.current = { x: e.clientX, y: e.clientY };
   };
   
@@ -686,7 +687,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
     if (isDragging) commitTransientPan();
     setIsDragging(false);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-    panPerfScheduleReport('pointer-up');
+    // panPerfScheduleReport('pointer-up');
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
