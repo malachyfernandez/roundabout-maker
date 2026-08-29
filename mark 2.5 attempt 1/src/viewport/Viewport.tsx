@@ -30,7 +30,96 @@ const PASS_THROUGH_EXIT_TOLERANCE = 12;
 const SMART_FOCUS_ZOOM = 0.30;
 const SMART_ZOOM_MARGIN = 0.14;
 const SMART_ZOOM_DURATION = 280;
-const CULL_MARGIN_RATIO = 0.06;
+const CULL_MARGIN_RATIO = 0.22;
+
+// ---- Pan performance instrumentation (temporary diagnostic, commented out) ----
+// To re-enable: uncomment this block and all panPerf* call sites below.
+// See context-pan-performance.md in src/utils/ for full details.
+//
+// type PanPerfSample = {
+//   phase: 'wheel' | 'pointermove' | 'rAF-apply' | 'rAF-commit' | 'layout-effect' | 'momentum';
+//   ms: number;
+// };
+// type PanPerfState = {
+//   active: boolean;
+//   startedAt: number;
+//   lastFrameTs: number;
+//   frameIntervals: number[];
+//   samples: PanPerfSample[];
+//   viewBoxMutations: number;
+//   transformMutations: number;
+//   commits: number;
+//   applies: number;
+//   wheelEvents: number;
+//   pointerMoves: number;
+//   momentumFrames: number;
+//   idleTimer: number | null;
+// };
+// const PAN_PERF: PanPerfState = {
+//   active: false, startedAt: 0, lastFrameTs: 0, frameIntervals: [], samples: [],
+//   viewBoxMutations: 0, transformMutations: 0, commits: 0, applies: 0,
+//   wheelEvents: 0, pointerMoves: 0, momentumFrames: 0, idleTimer: null,
+// };
+// const panPerfStart = () => {
+//   if (!PAN_PERF.active) {
+//     PAN_PERF.active = true; PAN_PERF.startedAt = performance.now(); PAN_PERF.lastFrameTs = performance.now();
+//     PAN_PERF.frameIntervals = []; PAN_PERF.samples = [];
+//     PAN_PERF.viewBoxMutations = 0; PAN_PERF.transformMutations = 0; PAN_PERF.commits = 0;
+//     PAN_PERF.applies = 0; PAN_PERF.wheelEvents = 0; PAN_PERF.pointerMoves = 0; PAN_PERF.momentumFrames = 0;
+//     console.log('%c[pan-perf] recording started', 'color:#2563eb;font-weight:bold');
+//   }
+//   if (PAN_PERF.idleTimer !== null) { clearTimeout(PAN_PERF.idleTimer); PAN_PERF.idleTimer = null; }
+// };
+// const panPerfRecordFrame = () => {
+//   const now = performance.now();
+//   if (PAN_PERF.lastFrameTs) PAN_PERF.frameIntervals.push(now - PAN_PERF.lastFrameTs);
+//   PAN_PERF.lastFrameTs = now;
+// };
+// const panPerfSample = (phase: PanPerfSample['phase'], ms: number) => {
+//   if (!PAN_PERF.active) return;
+//   PAN_PERF.samples.push({ phase, ms });
+// };
+// const panPerfScheduleReport = (reason: string) => {
+//   if (!PAN_PERF.active) return;
+//   if (PAN_PERF.idleTimer !== null) clearTimeout(PAN_PERF.idleTimer);
+//   PAN_PERF.idleTimer = window.setTimeout(() => {
+//     PAN_PERF.idleTimer = null; PAN_PERF.active = false;
+//     const dur = performance.now() - PAN_PERF.startedAt;
+//     const fi = [...PAN_PERF.frameIntervals].sort((a, b) => a - b);
+//     const q = (a: number[]) => (a.length ? a[Math.floor(a.length * 0.95)] : 0);
+//     const byPhase = (p: PanPerfSample['phase']) => PAN_PERF.samples.filter(s => s.phase === p).map(s => s.ms);
+//     const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
+//     const fmt = (a: number[]) => a.length ? `n=${a.length} total=${sum(a).toFixed(1)}ms p95=${q([...a].sort((x, y) => x - y)).toFixed(2)}ms max=${Math.max(...a).toFixed(2)}ms` : 'n=0';
+//     console.group(`%c[pan-perf] report (${reason}) — ${dur.toFixed(0)}ms total`, 'color:#16a34a;font-weight:bold');
+//     console.log('frame intervals:', fmt(fi), `over20ms=${fi.filter(x => x > 20).length}/${fi.length}`);
+//     console.log('viewBox mutations:', PAN_PERF.viewBoxMutations, '| transform mutations:', PAN_PERF.transformMutations);
+//     console.log('applies:', PAN_PERF.applies, '| commits:', PAN_PERF.commits, '| momentumFrames:', PAN_PERF.momentumFrames);
+//     console.log('wheel events:', PAN_PERF.wheelEvents, '| pointer moves:', PAN_PERF.pointerMoves);
+//     console.log('wheel dispatch:', fmt(byPhase('wheel')));
+//     console.log('pointermove dispatch:', fmt(byPhase('pointermove')));
+//     console.log('rAF applyTransientPan:', fmt(byPhase('rAF-apply')));
+//     console.log('rAF commitTransientPan:', fmt(byPhase('rAF-commit')));
+//     console.log('layout-effect:', fmt(byPhase('layout-effect')));
+//     console.log('momentum step:', fmt(byPhase('momentum')));
+//     console.groupEnd();
+//   }, 500);
+// };
+// const panPerfMark = (phase: PanPerfSample['phase'], fn: () => void) => {
+//   if (!PAN_PERF.active) { fn(); return; }
+//   const s = performance.now(); fn(); panPerfSample(phase, performance.now() - s);
+// };
+// (window as unknown as { __panPerfInstall?: (svg: SVGSVGElement) => void }).__panPerfInstall = (svg: SVGSVGElement) => {
+//   if ((svg as unknown as { __panPerfObserved?: boolean }).__panPerfObserved) return;
+//   (svg as unknown as { __panPerfObserved?: boolean }).__panPerfObserved = true;
+//   const obs = new MutationObserver(records => {
+//     for (const r of records) {
+//       if (r.attributeName === 'viewBox') PAN_PERF.viewBoxMutations++;
+//       if (r.attributeName === 'style') PAN_PERF.transformMutations++;
+//     }
+//   });
+//   obs.observe(svg, { attributes: true });
+// };
+
 
 const hitTestTargets = (x: number, y: number, passThroughStack: string[]) => {
   const elements = document.elementsFromPoint(x, y);
@@ -88,6 +177,10 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   const viewUpdateRef = useRef<number | null>(null);
   const viewIdleTimerRef = useRef<number | null>(null);
   const hoverFrameRef = useRef<number | null>(null);
+  const panVelocityRef = useRef({ x: 0, y: 0 });
+  const lastWheelTimeRef = useRef(0);
+  const momentumRef = useRef<number | null>(null);
+  const momentumStartRef = useRef<number | null>(null);
 
   React.useEffect(() => { panRef.current = pan; }, [pan]);
   React.useEffect(() => { zoomRef.current = zoom; }, [zoom]);
@@ -131,6 +224,8 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   const passThroughContactRef = useRef<{ x: number; y: number } | null>(null);
   
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const renderedPanRef = useRef(pan);
   const setSelection = useEditorStore(state => state.setSelection);
   const setHovered = useEditorStore(state => state.setHovered);
   const activeDrag = useEditorStore(state => state.drag);
@@ -156,6 +251,15 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   const height = baseViewSize * zoom;
   const vx = pan.x - width / 2;
   const vy = pan.y - height / 2;
+  // Expanded viewBox for compositor-pan: render extra margin so the SVG
+  // element can be translated without showing edges. The SVG element is
+  // sized proportionally larger and positioned absolutely so its center
+  // aligns with the container center when transform is identity.
+  const renderScale = 1 + 2 * CULL_MARGIN_RATIO;
+  const renderWidth = width * renderScale;
+  const renderHeight = height * renderScale;
+  const renderVx = pan.x - renderWidth / 2;
+  const renderVy = pan.y - renderHeight / 2;
   const visibleBounds = React.useMemo(() => {
     const margin = Math.max(width, height) * CULL_MARGIN_RATIO;
     return {
@@ -170,6 +274,43 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   const effectsEnabled = policy.effectsDuringInteraction || !interactionActive;
   const viewDetailsEnabled = policy.effectsDuringInteraction || (!isDragging && !viewInteracting);
 
+  const applyTransientPan = React.useCallback(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const worldDx = renderedPanRef.current.x - panRef.current.x;
+    const worldDy = renderedPanRef.current.y - panRef.current.y;
+    if (!worldDx && !worldDy) { svg.style.transform = ''; return; }
+    // Convert world-unit delta to screen pixels using the SVG's own layout size.
+    // The SVG element is renderScale times the container, and its viewBox is
+    // renderScale times the visible world area, so the scale is the same as
+    // containerWidth / (baseViewSize * zoom). We use clientWidth which is the
+    // untransformed layout width.
+    const pxPerWorld = svg.clientWidth / (baseViewSize * zoomRef.current * (1 + 2 * CULL_MARGIN_RATIO));
+    const dxPx = worldDx * pxPerWorld;
+    const dyPx = worldDy * pxPerWorld;
+    panPerfMark('rAF-apply', () => {
+      svg.style.transform = `translate(${dxPx}px, ${dyPx}px)`;
+    });
+    if (PAN_PERF.active) PAN_PERF.applies++;
+  }, []);
+
+  const commitTransientPan = React.useCallback(() => {
+    panPerfMark('rAF-commit', () => setPan(panRef.current));
+    if (PAN_PERF.active) PAN_PERF.commits++;
+  }, []);
+
+  React.useLayoutEffect(() => {
+    panPerfMark('layout-effect', () => {
+      renderedPanRef.current = pan;
+      applyTransientPan();
+    });
+  }, [applyTransientPan, pan, zoom]);
+
+  React.useEffect(() => {
+    const svg = svgRef.current;
+    if (svg) (window as unknown as { __panPerfInstall?: (s: SVGSVGElement) => void }).__panPerfInstall?.(svg);
+  }, []);
+
   const queueViewUpdate = React.useCallback(() => {
     if (viewUpdateRef.current !== null) return;
     viewUpdateRef.current = requestAnimationFrame(() => {
@@ -179,12 +320,29 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
     });
   }, []);
 
+  const queuePanPreview = React.useCallback(() => {
+    if (viewUpdateRef.current !== null) return;
+    viewUpdateRef.current = requestAnimationFrame(() => {
+      viewUpdateRef.current = null;
+      panPerfRecordFrame();
+      const limit = baseViewSize * zoomRef.current * CULL_MARGIN_RATIO * 0.75;
+      const rendered = renderedPanRef.current;
+      if (Math.abs(panRef.current.x - rendered.x) >= limit || Math.abs(panRef.current.y - rendered.y) >= limit) {
+        commitTransientPan();
+      } else {
+        applyTransientPan();
+      }
+    });
+  }, [applyTransientPan, commitTransientPan]);
+
   const markViewInteraction = React.useCallback(() => {
+    panPerfStart();
     setViewInteracting(true);
     if (viewIdleTimerRef.current !== null) clearTimeout(viewIdleTimerRef.current);
     viewIdleTimerRef.current = window.setTimeout(() => {
       viewIdleTimerRef.current = null;
       setViewInteracting(false);
+      panPerfScheduleReport('view-idle');
     }, 140);
   }, []);
 
@@ -192,12 +350,53 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
     if (viewUpdateRef.current !== null) cancelAnimationFrame(viewUpdateRef.current);
     if (hoverFrameRef.current !== null) cancelAnimationFrame(hoverFrameRef.current);
     if (viewIdleTimerRef.current !== null) clearTimeout(viewIdleTimerRef.current);
+    if (momentumRef.current !== null) cancelAnimationFrame(momentumRef.current);
+    if (momentumStartRef.current !== null) clearTimeout(momentumStartRef.current);
+  }, []);
+
+  const cancelMomentum = React.useCallback(() => {
+    if (momentumRef.current !== null) { cancelAnimationFrame(momentumRef.current); momentumRef.current = null; }
+    if (momentumStartRef.current !== null) { clearTimeout(momentumStartRef.current); momentumStartRef.current = null; }
+    panVelocityRef.current = { x: 0, y: 0 };
   }, []);
 
   const cancelViewAnimation = React.useCallback(() => {
     if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
     viewAnimationRef.current = null;
-  }, []);
+    cancelMomentum();
+  }, [cancelMomentum]);
+
+  const startMomentum = React.useCallback(() => {
+    let lastTime = performance.now();
+    const animate = (now: number) => {
+      const dt = Math.min(64, now - lastTime); // clamp to avoid huge jumps after tab switch
+      lastTime = now;
+      // Frame-rate-independent exponential decay (~0.88 per 16.67ms frame)
+      const decay = Math.pow(0.88, dt / 16.67);
+      panVelocityRef.current = {
+        x: panVelocityRef.current.x * decay,
+        y: panVelocityRef.current.y * decay
+      };
+      const speed = Math.hypot(panVelocityRef.current.x, panVelocityRef.current.y);
+      if (speed < 0.002) {
+        momentumRef.current = null;
+        commitTransientPan();
+        panPerfScheduleReport('momentum-end');
+        return;
+      }
+      panPerfMark('momentum', () => {
+        panRef.current = {
+          x: panRef.current.x + panVelocityRef.current.x * dt,
+          y: panRef.current.y + panVelocityRef.current.y * dt
+        };
+      });
+      if (PAN_PERF.active) PAN_PERF.momentumFrames++;
+      markViewInteraction();
+      queuePanPreview();
+      momentumRef.current = requestAnimationFrame(animate);
+    };
+    momentumRef.current = requestAnimationFrame(animate);
+  }, [commitTransientPan, markViewInteraction, queuePanPreview]);
 
   const smartZoom = React.useCallback((points: Vec2[], mode: 'focus' | 'fit') => {
     if (!settings.smartZoom || points.length === 0) return;
@@ -258,7 +457,9 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
       e.preventDefault();
       cancelViewAnimation();
       markViewInteraction();
-      const rect = svg.getBoundingClientRect();
+      if (PAN_PERF.active) PAN_PERF.wheelEvents++;
+      panPerfMark('wheel', () => {
+      const rect = (containerRef.current ?? svg).getBoundingClientRect();
       const currentZoom = zoomRef.current;
       const currentPan = panRef.current;
       const currentWidth = baseViewSize * currentZoom;
@@ -283,21 +484,35 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         const newVy = svgCursorY - (cursorY / rect.height) * newHeight;
         zoomRef.current = newZoom;
         panRef.current = { x: newVx + newWidth / 2, y: newVy + newHeight / 2 };
+        queueViewUpdate();
       } else {
         // Two-finger pan (trackpad) or mouse wheel scroll.
         // Convert screen-pixel delta to world coordinates using the
         // world-to-screen ratio (scales with zoom level).
         const worldPerPixel = currentWidth / rect.width;
-        panRef.current = {
-          x: currentPan.x + e.deltaX * worldPerPixel * settings.panSensitivity,
-          y: currentPan.y + e.deltaY * worldPerPixel * settings.panSensitivity
-        };
+        const dx = e.deltaX * worldPerPixel * settings.panSensitivity;
+        const dy = e.deltaY * worldPerPixel * settings.panSensitivity;
+        panRef.current = { x: currentPan.x + dx, y: currentPan.y + dy };
+        // Track velocity (world units per ms) for momentum/inertia.
+        const now = performance.now();
+        const dt = Math.max(1, now - lastWheelTimeRef.current);
+        lastWheelTimeRef.current = now;
+        panVelocityRef.current = { x: dx / dt, y: dy / dt };
+        // Cancel any running momentum — user is actively scrolling.
+        if (momentumRef.current !== null) { cancelAnimationFrame(momentumRef.current); momentumRef.current = null; }
+        if (momentumStartRef.current !== null) { clearTimeout(momentumStartRef.current); momentumStartRef.current = null; }
+        // After a short idle period, start momentum decay.
+        momentumStartRef.current = window.setTimeout(() => {
+          momentumStartRef.current = null;
+          startMomentum();
+        }, 80);
+        queuePanPreview();
       }
-      queueViewUpdate();
+      });
     };
     svg.addEventListener('wheel', onWheel, { passive: false });
     return () => svg.removeEventListener('wheel', onWheel);
-  }, [settings.zoomSensitivity, settings.panSensitivity, cancelViewAnimation, markViewInteraction, queueViewUpdate]);
+  }, [settings.zoomSensitivity, settings.panSensitivity, cancelViewAnimation, markViewInteraction, queuePanPreview, queueViewUpdate, startMomentum]);
 
   // Re-evaluate hover at the last known mouse position, skipping passed-through targets.
   // Used both by pointermove and the P key handler so hover updates immediately.
@@ -449,24 +664,29 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
     }
 
     if (!isDragging) return;
+    if (PAN_PERF.active) PAN_PERF.pointerMoves++;
+    panPerfMark('pointermove', () => {
     const dx = e.clientX - panMouseRef.current.x;
     const dy = e.clientY - panMouseRef.current.y;
     
     if (svgRef.current) {
-      const rect = svgRef.current.getBoundingClientRect();
+      const rect = (containerRef.current ?? svgRef.current).getBoundingClientRect();
       const currentWidth = baseViewSize * zoomRef.current;
       panRef.current = {
         x: panRef.current.x - dx * currentWidth / rect.width,
         y: panRef.current.y - dy * currentWidth / rect.height
       };
-      queueViewUpdate();
+      queuePanPreview();
     }
+    });
     panMouseRef.current = { x: e.clientX, y: e.clientY };
   };
   
   const handlePointerUp = (e: React.PointerEvent) => {
+    if (isDragging) commitTransientPan();
     setIsDragging(false);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    panPerfScheduleReport('pointer-up');
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -479,12 +699,12 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   };
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#f0f0f0' }}>
+    <div ref={containerRef} style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#f0f0f0', overflow: 'hidden' }}>
       
       <div style={{ position: 'absolute', top: 16, right: 16, background: 'white', padding: 12, borderRadius: 8, boxShadow: '0 2px 10px rgba(0,0,0,0.1)', zIndex: 10 }}>
         <h4 style={{ margin: '0 0 8px 0' }}>Viewport</h4>
         <div style={{ marginBottom: 8 }}>
-          <button data-tooltip="Reset canvas pan and zoom without changing the design." onClick={() => { cancelViewAnimation(); setZoom(1); setPan({x:0, y:0}); }} style={{ padding: '4px 8px' }}>Reset View</button>
+          <button data-tooltip="Reset canvas pan and zoom without changing the design." onClick={() => { cancelViewAnimation(); zoomRef.current = 1; panRef.current = { x: 0, y: 0 }; setZoom(1); setPan({ x: 0, y: 0 }); }} style={{ padding: '4px 8px' }}>Reset View</button>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
           <label>
@@ -509,8 +729,17 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
 
       <svg 
         ref={svgRef}
-        viewBox={`${vx} ${vy} ${width} ${height}`} 
-        style={{ width: '100%', height: '100%', cursor: modalToolActive ? 'crosshair' : isDragging ? 'grabbing' : 'default', touchAction: 'none' }}
+        viewBox={`${renderVx} ${renderVy} ${renderWidth} ${renderHeight}`} 
+        style={{
+          position: 'absolute',
+          width: `${100 * renderScale}%`,
+          height: `${100 * renderScale}%`,
+          left: `${-100 * CULL_MARGIN_RATIO}%`,
+          top: `${-100 * CULL_MARGIN_RATIO}%`,
+          cursor: modalToolActive ? 'crosshair' : isDragging ? 'grabbing' : 'default',
+          touchAction: 'none',
+          willChange: interactionActive ? 'transform' : undefined
+        }}
         data-tooltip={activeTool === 'connect-bypass' ? 'Click a highlighted exit lane on another road to complete the right-turn bypass.' : activeTool === 'add-road' ? (pendingRoadStart ? 'Click to place the second endpoint of the new road.' : 'Click to place the first endpoint of the new road.') : activeTool === 'add-ring' ? 'Click to place a new ring center.' : undefined}
         onPointerDownCapture={cancelViewAnimation}
         onPointerDown={handlePointerDown}
@@ -555,7 +784,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
       {effectsEnabled && selection?.kind === 'ring' && svgRef.current && (() => {
         const ring = committedConfig.rings.find(candidate => candidate.id === selection.ringId);
         if (!ring) return null;
-        const rect = svgRef.current.getBoundingClientRect();
+        const rect = containerRef.current?.getBoundingClientRect() ?? svgRef.current.getBoundingClientRect();
         return (
           <FloatingButton
             key={`${selection.ringId}-delete`}
@@ -593,7 +822,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         const point = profile[pointIndex];
         if (!point) return null;
         const canDelete = profile.length > 2 && pointIndex > 0 && pointIndex < profile.length - 1;
-        const rect = svg.getBoundingClientRect();
+        const rect = (containerRef.current ?? svg).getBoundingClientRect();
         const center = worldToScreen(position, svg);
         const lineRadius = Math.max(profileSideOuter(point, 'in'), profileSideOuter(point, 'out')) + 14 * zoom;
         const radiusEdge = worldToScreen({ x: position.x + lineRadius, y: position.y }, svg);
@@ -622,7 +851,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         const svg = svgRef.current;
         const arm = (draftConfig || committedConfig).arms.find(a => a.id === selection.armId);
         if (!arm || arm.nodes.length === 0) return null;
-        const rect = svg.getBoundingClientRect();
+        const rect = (containerRef.current ?? svg).getBoundingClientRect();
 
         // Convert both end nodes to screen space.
         // worldToScreen uses getScreenCTM() which already returns absolute
@@ -689,7 +918,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         const ring = resolveLaneRing(committedConfig, arm, selection.dir, selection.laneIndex);
         const anchor = ring?.center ?? arm.nodes[0]?.point;
         if (!anchor) return null;
-        const rect = svg.getBoundingClientRect();
+        const rect = (containerRef.current ?? svg).getBoundingClientRect();
         return (
           <FloatingButton
             key={`${selection.armId}-${selection.dir}-${selection.laneIndex}-delete`}
@@ -717,7 +946,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         const endpoint = selection.dir === 'in' ? 'end' : 'start';
         const ring = resolveLaneRing(config, arm, selection.dir, selection.laneIndex, endpoint);
         if (!ring) return null;
-        const rect = svg.getBoundingClientRect();
+        const rect = (containerRef.current ?? svg).getBoundingClientRect();
         const anchorPoint = worldToScreen(ring.center, svg);
         const bounds = { left: rect.left, top: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height };
         return (
