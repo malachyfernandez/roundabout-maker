@@ -138,10 +138,9 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
 type Props = {
   config: RoundaboutConfig;
   zoom: number;
-  effectsEnabled: boolean;
 };
 
-export const CenterlineLayer: React.FC<Props> = React.memo(({ config, zoom, effectsEnabled }) => {
+export const CenterlineLayer: React.FC<Props> = React.memo(({ config, zoom }) => {
   const selection = useEditorStore(state => state.selection);
   const hovered = useEditorStore(state => state.hovered);
   const viewMode = useEditorStore(state => state.viewMode);
@@ -182,7 +181,7 @@ export const CenterlineLayer: React.FC<Props> = React.memo(({ config, zoom, effe
           passedThrough={passThroughStack.includes(JSON.stringify({ kind: 'arm', armId: arm.id }))}
           hovered={hovered?.kind === 'arm' && hovered.armId === arm.id}
           guideLightness={guideLightness}
-          guideShadowStrength={effectsEnabled ? guideShadowStrength : 0}
+          guideShadowStrength={guideShadowStrength}
         />
       ))}
     </g>

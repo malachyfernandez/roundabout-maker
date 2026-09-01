@@ -15,7 +15,7 @@ export const PERFORMANCE_PRESETS: Record<PerformancePreset, { label: string; des
   },
   balanced: {
     label: 'Mostly live with really good performance',
-    description: 'Keep pavement and controls live; defer markings and visual effects until interaction stops.',
+    description: 'Keep pavement, controls, and road guides live; defer markings and nonessential effects until interaction stops.',
     policy: { solveDuringDrag: true, markingsDuringDrag: false, effectsDuringInteraction: false, dragSampleCount: 60 }
   },
   release: {

@@ -177,13 +177,6 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   const viewUpdateRef = useRef<number | null>(null);
   const viewIdleTimerRef = useRef<number | null>(null);
   const hoverFrameRef = useRef<number | null>(null);
-  const panVelocityRef = useRef({ x: 0, y: 0 });
-  const lastWheelTimeRef = useRef(0);
-  const momentumRef = useRef<number | null>(null);
-  const momentumStartRef = useRef<number | null>(null);
-
-  React.useEffect(() => { panRef.current = pan; }, [pan]);
-  React.useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
   React.useEffect(() => {
     const reset = () => {
@@ -225,7 +218,6 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const renderedPanRef = useRef(pan);
   const setSelection = useEditorStore(state => state.setSelection);
   const setHovered = useEditorStore(state => state.setHovered);
   const activeDrag = useEditorStore(state => state.drag);
@@ -251,15 +243,6 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   const height = baseViewSize * zoom;
   const vx = pan.x - width / 2;
   const vy = pan.y - height / 2;
-  // Expanded viewBox for compositor-pan: render extra margin so the SVG
-  // element can be translated without showing edges. The SVG element is
-  // sized proportionally larger and positioned absolutely so its center
-  // aligns with the container center when transform is identity.
-  const renderScale = 1 + 2 * CULL_MARGIN_RATIO;
-  const renderWidth = width * renderScale;
-  const renderHeight = height * renderScale;
-  const renderVx = pan.x - renderWidth / 2;
-  const renderVy = pan.y - renderHeight / 2;
   const visibleBounds = React.useMemo(() => {
     const margin = Math.max(width, height) * CULL_MARGIN_RATIO;
     return {
@@ -274,44 +257,6 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
   const effectsEnabled = policy.effectsDuringInteraction || !interactionActive;
   const viewDetailsEnabled = policy.effectsDuringInteraction || (!isDragging && !viewInteracting);
 
-  const applyTransientPan = React.useCallback(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const worldDx = renderedPanRef.current.x - panRef.current.x;
-    const worldDy = renderedPanRef.current.y - panRef.current.y;
-    if (!worldDx && !worldDy) { svg.style.transform = ''; return; }
-    // Convert world-unit delta to screen pixels using the SVG's own layout size.
-    // The SVG element is renderScale times the container, and its viewBox is
-    // renderScale times the visible world area, so the scale is the same as
-    // containerWidth / (baseViewSize * zoom). We use clientWidth which is the
-    // untransformed layout width.
-    const pxPerWorld = svg.clientWidth / (baseViewSize * zoomRef.current * (1 + 2 * CULL_MARGIN_RATIO));
-    const dxPx = worldDx * pxPerWorld;
-    const dyPx = worldDy * pxPerWorld;
-    // panPerfMark('rAF-apply', () => {
-    svg.style.transform = `translate(${dxPx}px, ${dyPx}px)`;
-    // });
-    // if (PAN_PERF.active) PAN_PERF.applies++;
-  }, []);
-
-  const commitTransientPan = React.useCallback(() => {
-    // panPerfMark('rAF-commit', () => setPan(panRef.current));
-    setPan(panRef.current);
-    // if (PAN_PERF.active) PAN_PERF.commits++;
-  }, []);
-
-  React.useLayoutEffect(() => {
-    // panPerfMark('layout-effect', () => {
-    renderedPanRef.current = pan;
-    applyTransientPan();
-    // });
-  }, [applyTransientPan, pan, zoom]);
-
-  React.useEffect(() => {
-    // const svg = svgRef.current;
-    // if (svg) (window as unknown as { __panPerfInstall?: (s: SVGSVGElement) => void }).__panPerfInstall?.(svg);
-  }, []);
-
   const queueViewUpdate = React.useCallback(() => {
     if (viewUpdateRef.current !== null) return;
     viewUpdateRef.current = requestAnimationFrame(() => {
@@ -320,21 +265,6 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
       setPan(panRef.current);
     });
   }, []);
-
-  const queuePanPreview = React.useCallback(() => {
-    if (viewUpdateRef.current !== null) return;
-    viewUpdateRef.current = requestAnimationFrame(() => {
-      viewUpdateRef.current = null;
-      // panPerfRecordFrame();
-      const limit = baseViewSize * zoomRef.current * CULL_MARGIN_RATIO * 0.75;
-      const rendered = renderedPanRef.current;
-      if (Math.abs(panRef.current.x - rendered.x) >= limit || Math.abs(panRef.current.y - rendered.y) >= limit) {
-        commitTransientPan();
-      } else {
-        applyTransientPan();
-      }
-    });
-  }, [applyTransientPan, commitTransientPan]);
 
   const markViewInteraction = React.useCallback(() => {
     // panPerfStart();
@@ -351,53 +281,12 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
     if (viewUpdateRef.current !== null) cancelAnimationFrame(viewUpdateRef.current);
     if (hoverFrameRef.current !== null) cancelAnimationFrame(hoverFrameRef.current);
     if (viewIdleTimerRef.current !== null) clearTimeout(viewIdleTimerRef.current);
-    if (momentumRef.current !== null) cancelAnimationFrame(momentumRef.current);
-    if (momentumStartRef.current !== null) clearTimeout(momentumStartRef.current);
-  }, []);
-
-  const cancelMomentum = React.useCallback(() => {
-    if (momentumRef.current !== null) { cancelAnimationFrame(momentumRef.current); momentumRef.current = null; }
-    if (momentumStartRef.current !== null) { clearTimeout(momentumStartRef.current); momentumStartRef.current = null; }
-    panVelocityRef.current = { x: 0, y: 0 };
   }, []);
 
   const cancelViewAnimation = React.useCallback(() => {
     if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
     viewAnimationRef.current = null;
-    cancelMomentum();
-  }, [cancelMomentum]);
-
-  const startMomentum = React.useCallback(() => {
-    let lastTime = performance.now();
-    const animate = (now: number) => {
-      const dt = Math.min(64, now - lastTime); // clamp to avoid huge jumps after tab switch
-      lastTime = now;
-      // Frame-rate-independent exponential decay (~0.88 per 16.67ms frame)
-      const decay = Math.pow(0.88, dt / 16.67);
-      panVelocityRef.current = {
-        x: panVelocityRef.current.x * decay,
-        y: panVelocityRef.current.y * decay
-      };
-      const speed = Math.hypot(panVelocityRef.current.x, panVelocityRef.current.y);
-      if (speed < 0.002) {
-        momentumRef.current = null;
-        commitTransientPan();
-        // panPerfScheduleReport('momentum-end');
-        return;
-      }
-      // panPerfMark('momentum', () => {
-      panRef.current = {
-        x: panRef.current.x + panVelocityRef.current.x * dt,
-        y: panRef.current.y + panVelocityRef.current.y * dt
-      };
-      // });
-      // if (PAN_PERF.active) PAN_PERF.momentumFrames++;
-      markViewInteraction();
-      queuePanPreview();
-      momentumRef.current = requestAnimationFrame(animate);
-    };
-    momentumRef.current = requestAnimationFrame(animate);
-  }, [commitTransientPan, markViewInteraction, queuePanPreview]);
+  }, []);
 
   const smartZoom = React.useCallback((points: Vec2[], mode: 'focus' | 'fit') => {
     if (!settings.smartZoom || points.length === 0) return;
@@ -494,26 +383,13 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         const dx = e.deltaX * worldPerPixel * settings.panSensitivity;
         const dy = e.deltaY * worldPerPixel * settings.panSensitivity;
         panRef.current = { x: currentPan.x + dx, y: currentPan.y + dy };
-        // Track velocity (world units per ms) for momentum/inertia.
-        const now = performance.now();
-        const dt = Math.max(1, now - lastWheelTimeRef.current);
-        lastWheelTimeRef.current = now;
-        panVelocityRef.current = { x: dx / dt, y: dy / dt };
-        // Cancel any running momentum — user is actively scrolling.
-        if (momentumRef.current !== null) { cancelAnimationFrame(momentumRef.current); momentumRef.current = null; }
-        if (momentumStartRef.current !== null) { clearTimeout(momentumStartRef.current); momentumStartRef.current = null; }
-        // After a short idle period, start momentum decay.
-        momentumStartRef.current = window.setTimeout(() => {
-          momentumStartRef.current = null;
-          startMomentum();
-        }, 80);
-        queuePanPreview();
+        queueViewUpdate();
       }
       // });
     };
     svg.addEventListener('wheel', onWheel, { passive: false });
     return () => svg.removeEventListener('wheel', onWheel);
-  }, [settings.zoomSensitivity, settings.panSensitivity, cancelViewAnimation, markViewInteraction, queuePanPreview, queueViewUpdate, startMomentum]);
+  }, [settings.zoomSensitivity, settings.panSensitivity, cancelViewAnimation, markViewInteraction, queueViewUpdate]);
 
   // Re-evaluate hover at the last known mouse position, skipping passed-through targets.
   // Used both by pointermove and the P key handler so hover updates immediately.
@@ -677,14 +553,13 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         x: panRef.current.x - dx * currentWidth / rect.width,
         y: panRef.current.y - dy * currentWidth / rect.height
       };
-      queuePanPreview();
+      queueViewUpdate();
     }
     // });
     panMouseRef.current = { x: e.clientX, y: e.clientY };
   };
   
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (isDragging) commitTransientPan();
     setIsDragging(false);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
     // panPerfScheduleReport('pointer-up');
@@ -730,16 +605,12 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
 
       <svg 
         ref={svgRef}
-        viewBox={`${renderVx} ${renderVy} ${renderWidth} ${renderHeight}`} 
+        viewBox={`${vx} ${vy} ${width} ${height}`}
         style={{
-          position: 'absolute',
-          width: `${100 * renderScale}%`,
-          height: `${100 * renderScale}%`,
-          left: `${-100 * CULL_MARGIN_RATIO}%`,
-          top: `${-100 * CULL_MARGIN_RATIO}%`,
+          width: '100%',
+          height: '100%',
           cursor: modalToolActive ? 'crosshair' : isDragging ? 'grabbing' : 'default',
-          touchAction: 'none',
-          willChange: interactionActive ? 'transform' : undefined
+          touchAction: 'none'
         }}
         data-tooltip={activeTool === 'connect-bypass' ? 'Click a highlighted exit lane on another road to complete the right-turn bypass.' : activeTool === 'add-road' ? (pendingRoadStart ? 'Click to place the second endpoint of the new road.' : 'Click to place the first endpoint of the new road.') : activeTool === 'add-ring' ? 'Click to place a new ring center.' : undefined}
         onPointerDownCapture={cancelViewAnimation}
@@ -778,7 +649,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         {viewMode !== 'segment' && (
           <MarkingsLayer config={renderConfig} segments={segments} defer={Boolean(activeDrag?.active) && !policy.markingsDuringDrag} visibleBounds={visibleBounds} />
         )}
-        <CenterlineLayer config={draftConfig || committedConfig} zoom={zoom} effectsEnabled={effectsEnabled} />
+        <CenterlineLayer config={draftConfig || committedConfig} zoom={zoom} />
         {viewDetailsEnabled && <LaneProfileLayer zoom={zoom} onSmartZoom={smartZoom} />}
         {(viewDetailsEnabled || activeDrag?.active) && <HandlesLayer zoom={zoom} segments={segments} />}
       </svg>
