@@ -1,9 +1,11 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { type ArmConfig, type RoundaboutConfig } from '../config/types';
 import { dragArmNode, insertArmNode } from '../editor/constraints';
 import { useEditorStore } from '../editor/editorStore';
-import { evaluateSpline, splineToSvgPath, type CatmullRomSpline } from '../math/spline';
+import { getRoadProfile } from '../core/profile';
+import { evaluateSpline, pointsToSvgPath, splineToSvgPath, type CatmullRomSpline } from '../math/spline';
 import { type Vec2, dot, len, sub } from '../math/vector';
+import { atProfileDistance, profileGeometry } from '../profile/worldGeometry';
 import { screenToWorld } from '../viewport/transform';
 
 type CenterlineProps = {
@@ -44,15 +46,32 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const commitDraft = useEditorStore(state => state.commitDraft);
   const setDrag = useEditorStore(state => state.setDrag);
+  const setSelection = useEditorStore(state => state.setSelection);
   const startPoint = useRef<Vec2 | null>(null);
   const insertedConfig = useRef<RoundaboutConfig | null>(null);
   const insertedNodeId = useRef<string | null>(null);
   const spline = makeSpline(arm);
   const d = splineToSvgPath(spline);
 
+  // Ghost node preview — rAF-coalesced so high-frequency pointermove doesn't
+  // trigger a React render per event.
+  const [ghostPoint, setGhostPoint] = useState<Vec2 | null>(null);
+  const pendingGhost = useRef<Vec2 | null>(null);
+  const ghostFrame = useRef<number | null>(null);
+  const flushGhost = () => {
+    ghostFrame.current = null;
+    setGhostPoint(pendingGhost.current);
+  };
+  const scheduleGhost = (point: Vec2 | null) => {
+    pendingGhost.current = point;
+    if (ghostFrame.current === null) ghostFrame.current = requestAnimationFrame(flushGhost);
+  };
+  React.useEffect(() => () => { if (ghostFrame.current !== null) cancelAnimationFrame(ghostFrame.current); }, []);
+
   const handlePointerDown = (event: React.PointerEvent<SVGPathElement>) => {
     if (!selected || passedThrough || arm.nodes.length < 2) return;
     event.stopPropagation();
+    scheduleGhost(null);
     const svg = event.currentTarget.closest('svg');
     if (!svg) return;
     const pointer = screenToWorld(event, svg);
@@ -67,16 +86,31 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
     insertedConfig.current = next;
     insertedNodeId.current = nodeId;
     setDraftConfig(next);
+    setSelection({ kind: 'arm-node', armId: arm.id, nodeId });
     setDrag({ active: true, type: 'insert-node' });
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: React.PointerEvent<SVGPathElement>) => {
-    if (!startPoint.current || !insertedConfig.current || !insertedNodeId.current) return;
+    if (startPoint.current && insertedConfig.current && insertedNodeId.current) {
+      const svg = event.currentTarget.closest('svg');
+      if (!svg) return;
+      const pointer = screenToWorld(event, svg);
+      setDraftConfig(dragArmNode(arm.id, insertedNodeId.current, sub(pointer, startPoint.current), insertedConfig.current));
+      return;
+    }
+    // Not dragging — update ghost node preview.
+    if (!selected || passedThrough) return;
     const svg = event.currentTarget.closest('svg');
     if (!svg) return;
     const pointer = screenToWorld(event, svg);
-    setDraftConfig(dragArmNode(arm.id, insertedNodeId.current, sub(pointer, startPoint.current), insertedConfig.current));
+    const globalT = projectOntoSpline(spline, pointer);
+    const { p } = evaluateSpline(spline, globalT);
+    scheduleGhost(p);
+  };
+
+  const handlePointerLeave = () => {
+    scheduleGhost(null);
   };
 
   const handlePointerUp = (event: React.PointerEvent<SVGPathElement>) => {
@@ -101,22 +135,77 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
   const guideColor = `hsl(221, 83%, ${guideLightness}%)`;
   const isHoverOnly = hovered && !selected && !relatedSelected;
 
+  // The "propper road" runs between the two ending cross-sections. Unselected
+  // arms only show and offer that span; while editing, the propper road is
+  // solid and the tails beyond it are dotted.
+  const { headPath, middlePath, tailPath } = React.useMemo(() => {
+    if (arm.nodes.length < 2) return { headPath: null, middlePath: null, tailPath: null };
+    const geometry = profileGeometry(arm);
+    const profile = getRoadProfile(arm, geometry.totalLength);
+    const startCap = profile.find(point => point.endAnchor === 'start') ?? profile[0];
+    const endCap = profile.find(point => point.endAnchor === 'end') ?? profile[profile.length - 1];
+    const startDistance = Math.max(0, Math.min(geometry.totalLength, startCap?.distance ?? 0));
+    const endDistance = Math.max(startDistance, Math.min(geometry.totalLength, endCap?.distance ?? geometry.totalLength));
+    const start = atProfileDistance(geometry, startDistance).p;
+    const end = atProfileDistance(geometry, endDistance).p;
+    const head = geometry.samples.filter(sample => sample.distance < startDistance).map(sample => sample.p);
+    const middle = geometry.samples.filter(sample => sample.distance > startDistance && sample.distance < endDistance).map(sample => sample.p);
+    const tail = geometry.samples.filter(sample => sample.distance > endDistance).map(sample => sample.p);
+    return {
+      headPath: head.length ? pointsToSvgPath([...head, start]) : null,
+      middlePath: pointsToSvgPath([start, ...middle, end]),
+      tailPath: tail.length ? pointsToSvgPath([end, ...tail]) : null
+    };
+  }, [arm]);
+  const splitAtBoundaries = selected || relatedSelected;
+
+  const activeStroke = selected ? '#2563eb' : '#3b82f6';
+  const activeWidth = (selected ? 2 : 1.75) * zoom;
+  const shadowFilter = guideShadowStrength > 0 ? `url(#road-guide-shadow)` : undefined;
+
   return (
     <g>
-      {showSpline && (
+      {showSpline && !splitAtBoundaries && (
         <path
-          d={d}
+          d={middlePath ?? d}
           fill="none"
-          stroke={selected ? '#2563eb' : hovered ? '#3b82f6' : guideColor}
-          strokeWidth={(selected ? 2 : hovered ? 1.75 : 1.25) * zoom}
-          strokeDasharray={selected ? undefined : hovered ? `${8 * zoom} ${4 * zoom}` : `${5 * zoom} ${5 * zoom}`}
+          stroke={hovered ? '#3b82f6' : guideColor}
+          strokeWidth={(hovered ? 1.75 : 1.25) * zoom}
+          strokeDasharray={`${5 * zoom} ${5 * zoom}`}
           opacity={isHoverOnly ? 0.85 : undefined}
-          filter={guideShadowStrength > 0 ? `url(#road-guide-shadow)` : undefined}
+          filter={shadowFilter}
           pointerEvents="none"
         />
       )}
+      {showSpline && splitAtBoundaries && (
+        <>
+          {[headPath, tailPath].map((tail, index) => tail && (
+            <path
+              key={index}
+              d={tail}
+              fill="none"
+              stroke={activeStroke}
+              strokeWidth={activeWidth}
+              strokeDasharray={`0 ${4 * zoom}`}
+              strokeLinecap="round"
+              filter={shadowFilter}
+              pointerEvents="none"
+            />
+          ))}
+          {middlePath && (
+            <path
+              d={middlePath}
+              fill="none"
+              stroke={activeStroke}
+              strokeWidth={activeWidth}
+              filter={shadowFilter}
+              pointerEvents="none"
+            />
+          )}
+        </>
+      )}
       <path
-        d={d}
+        d={selected && !passedThrough ? d : middlePath ?? d}
         fill="none"
         stroke="transparent"
         strokeWidth={10}
@@ -130,7 +219,20 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
+        onPointerLeave={handlePointerLeave}
       />
+      {ghostPoint && (
+        <circle
+          cx={ghostPoint.x}
+          cy={ghostPoint.y}
+          r={6 * zoom}
+          fill="#fff"
+          stroke="#2563eb"
+          strokeWidth={2 * zoom}
+          opacity={0.4}
+          pointerEvents="none"
+        />
+      )}
     </g>
   );
 };
@@ -176,7 +278,7 @@ export const CenterlineLayer: React.FC<Props> = React.memo(({ config, zoom }) =>
           arm={arm}
           zoom={zoom}
           selected={selection?.kind === 'arm' && selection.armId === arm.id}
-          relatedSelected={(selection?.kind === 'lane' || selection?.kind === 'profile-point') && selection.armId === arm.id}
+          relatedSelected={(selection?.kind === 'lane' || selection?.kind === 'profile-point' || selection?.kind === 'arm-node') && selection.armId === arm.id}
           anySelection={anySelection}
           passedThrough={passThroughStack.includes(JSON.stringify({ kind: 'arm', armId: arm.id }))}
           hovered={hovered?.kind === 'arm' && hovered.armId === arm.id}

@@ -49,8 +49,18 @@ describe('profile editor math', () => {
       point('c', 20, [10], []),
       point('d', 30, [0], [])
     ];
-    expect(profileTransitionTargets(profile, 'in', 0, 0)).toEqual([1]);
-    expect(profileTransitionTargets(profile, 'in', 0, 2)).toEqual([1]);
+    expect(profileTransitionTargets(profile, 'in', 0, 0)).toEqual([-1, 1]);
+    expect(profileTransitionTargets(profile, 'in', 0, 2)).toEqual([1, 3]);
+  });
+
+  it('places cap-end transitions on the first and last cross-sections', () => {
+    const profile = [
+      point('a', 0, [10], []),
+      point('b', 10, [10], []),
+      point('c', 20, [0], [])
+    ];
+    expect(profileTransitionSection(profile, 'in', 0, -1).distance).toBe(0);
+    expect(profileTransitionSection(profile, 'in', 0, 2).distance).toBe(20);
   });
 
   it('uses half of the source lane as a transition drag preview at another boundary', () => {

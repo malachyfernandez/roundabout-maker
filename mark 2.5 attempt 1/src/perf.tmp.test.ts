@@ -23,7 +23,8 @@ describe('performance pipeline', () => {
     expect(buildMarkings(hardConfig, fullSegments, { yieldSetback: 6 })).toHaveLength(129);
   });
 
-  test('defines balanced as the live-geometry default policy', () => {
+  test('defines live as the default policy', () => {
+    expect(useEditorStore.getState().settings.performancePreset).toBe('live');
     expect(PERFORMANCE_PRESETS.balanced.label).toBe('Mostly live with really good performance');
     expect(performancePolicy('balanced')).toMatchObject({ solveDuringDrag: true, markingsDuringDrag: false, effectsDuringInteraction: false });
     expect(performancePolicy('live').markingsDuringDrag).toBe(true);

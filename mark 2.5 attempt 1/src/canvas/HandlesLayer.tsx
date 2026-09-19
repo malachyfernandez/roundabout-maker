@@ -16,8 +16,7 @@ import {
   dragRingCenter,
   dragRingRadius,
   dragRingWidth,
-  dragTangentHandle,
-  removeArmNode
+  dragTangentHandle
 } from '../editor/constraints';
 import { getBezierSegment } from '../math/spline';
 import { add, fromAngle, len, scale, sub, type Vec2 } from '../math/vector';
@@ -26,6 +25,7 @@ import { type Arc, type Line, arcPoint } from '../geometry/primitives';
 import { type RoundaboutConfig, type SelectionTarget } from '../config/types';
 import { connectBypassLanes, isValidBypassLanePair } from '../core/bypass';
 import { laneRoleAtEndpoint, resolveLaneRing, solveBypassAttachmentPoints, solveLaneFillet, type RoadEndpoint } from '../core/routes';
+import { HINT, type DragModifiers } from '../ui/keyHints';
 
 type Props = {
   zoom: number;
@@ -49,6 +49,7 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
   const [activeEndpoint, setActiveEndpoint] = React.useState<RoadEndpoint | null>(null);
   const magnetRef = React.useRef<ConnectionMagnet | null>(null);
   const setDrag = useEditorStore(state => state.setDrag);
+  const setSelection = useEditorStore(state => state.setSelection);
   const commitDraft = useEditorStore(state => state.commitDraft);
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const config = draftConfig || committedConfig;
@@ -72,10 +73,11 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
   }), [committedConfig, selection]);
   const showIslandCenter = selection?.kind === 'island';
   const islandCenter = config.island.center ?? { x: 0, y: 0 };
-  const activeArm = selection?.kind === 'arm' || selection?.kind === 'lane' || selection?.kind === 'profile-point'
+  const activeArm = selection?.kind === 'arm' || selection?.kind === 'arm-node' || selection?.kind === 'lane' || selection?.kind === 'profile-point'
     ? config.arms.find(arm => arm.id === selection.armId)
     : null;
   const armDirectlySelected = selection?.kind === 'arm';
+  const selectedNodeId = selection?.kind === 'arm-node' ? selection.nodeId : null;
   const selectedRing = selection?.kind === 'ring' ? config.rings.find(ring => ring.id === selection.ringId) : null;
   const selectedLane = selection?.kind === 'lane' ? selection : null;
   const filletSegments = selectedLane ? Object.fromEntries((['start', 'end'] as const).map(endpoint => [endpoint,
@@ -165,7 +167,14 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
     setDragVisualPoint(null);
   };
 
-  const resolveConnectionDragPosition = (rawPosition: Vec2): Vec2 => {
+  const resolveConnectionDragPosition = (rawPosition: Vec2, _original: RoundaboutConfig, modifiers?: DragModifiers): Vec2 => {
+    // Ctrl/Cmd disables snapping — the handle follows the pointer freely.
+    if (modifiers?.mod) {
+      magnetRef.current = null;
+      setActiveMagnet(null);
+      setDragVisualPoint(rawPosition);
+      return rawPosition;
+    }
     const captureRadius = 16 * zoom;
 
     // Exclude the current connection target so the handle starts free, not
@@ -288,9 +297,10 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
         />
       )}
 
-      {/* All gizmos below are visually hidden during any drag, but kept mounted
-          so the dragged Handle retains its pointer capture and drag lifecycle. */}
-      <g style={{ opacity: isDragging ? 0 : 1, pointerEvents: isDragging ? 'none' : 'auto' }}>
+      {/* All gizmos below are kept mounted during drag so the dragged Handle
+          retains its pointer capture and drag lifecycle. Non-dragged gizmos
+          stay visible but don't capture pointer events while dragging. */}
+      <g style={{ pointerEvents: isDragging ? 'none' : 'auto' }}>
         <>
           {showIslandCenter && (
             <>
@@ -457,7 +467,10 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
             );
           })()}
 
-          {armDirectlySelected && activeArm && activeArm.nodes.flatMap((node, index) => {
+          {activeArm && selectedNodeId !== null && (() => {
+            const index = activeArm.nodes.findIndex(n => n.id === selectedNodeId);
+            if (index < 0) return null;
+            const node = activeArm.nodes[index];
             const handles = [];
             if (index > 0) {
               const segment = getBezierSegment(activeArm.nodes, index - 1);
@@ -484,22 +497,26 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
               );
             }
             return handles;
-          })}
+          })()}
 
-          {armDirectlySelected && activeArm && activeArm.nodes.map(node => (
-            <Handle
-              key={node.id}
-              x={node.point.x}
-              y={node.point.y}
-              zoom={zoom}
-              cursor="move"
-              fill="#fff"
-              stroke="#2563eb"
-              tooltip={activeArm.nodes.length > 2 ? 'Click to delete.' : 'Roads need at least two points.'}
-              onDrag={(delta, original) => dragArmNode(activeArm.id, node.id, delta, original)}
-              onClick={activeArm.nodes.length > 2 ? original => removeArmNode(original, activeArm.id, node.id) : undefined}
-            />
-          ))}
+          {activeArm && (armDirectlySelected || selectedNodeId !== null) && activeArm.nodes.map(node => {
+            const isSelected = node.id === selectedNodeId;
+            return (
+              <Handle
+                key={node.id}
+                x={node.point.x}
+                y={node.point.y}
+                zoom={zoom}
+                cursor="move"
+                fill={isSelected ? '#dbeafe' : '#fff'}
+                stroke="#2563eb"
+                tooltip={isSelected ? 'Drag to move this node.' : 'Click to select this node, or drag to move it.'}
+                onDragStart={() => { if (!isSelected) setSelection({ kind: 'arm-node', armId: activeArm.id, nodeId: node.id }); }}
+                onDrag={(delta, original) => dragArmNode(activeArm.id, node.id, delta, original)}
+                onClick={isSelected ? undefined : original => { setSelection({ kind: 'arm-node', armId: activeArm.id, nodeId: node.id }); return original; }}
+              />
+            );
+          })}
         </>
       </g>
       {(!isDragging || isRingSnapDragging) && selectedLane && (['start', 'end'] as const).map(endpoint => {
@@ -518,6 +535,7 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
             followPointer
             springDrag={Boolean(activeMagnet)}
             resolveDragPosition={resolveConnectionDragPosition}
+            keyHints={[HINT.noSnap]}
             onDragStart={() => {
               clearDragFeedback();
               setActiveEndpoint(endpoint);

@@ -4,6 +4,7 @@ import { Sidebar } from './ui/Sidebar';
 import { Viewport } from './viewport/Viewport';
 import { TopBar } from './ui/TopBar';
 import { ActionTooltip } from './ui/ActionTooltip';
+import { KeyboardHints } from './ui/KeyboardHints';
 import { ToolPalette } from './ui/ToolPalette';
 import { UndoBar } from './ui/UndoBar';
 import { ToastLayer } from './ui/ToastLayer';
@@ -37,6 +38,7 @@ function App() {
           <UndoBar />
           <Viewport renderConfig={renderConfig} segments={segments} />
           <ToolPalette />
+          <KeyboardHints />
         </main>
       </div>
       <ActionTooltip />

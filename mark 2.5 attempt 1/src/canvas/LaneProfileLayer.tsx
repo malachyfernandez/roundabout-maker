@@ -26,6 +26,7 @@ import {
   profileLaneInsertIndices,
   profileLaneStartEndMovers,
   profileLaneTotalOffset,
+  profileSideInner,
   profileSideOuter,
   profileTransitionSection,
   profileTransitionTargets,
@@ -42,6 +43,7 @@ import {
   profilePointsPath,
   projectProfileDistance
 } from '../profile/worldGeometry';
+import { dataKeys, dragModifiers, HINT } from '../ui/keyHints';
 
 type Props = { zoom: number; onSmartZoom: (points: Vec2[], mode: 'focus' | 'fit') => void };
 type Direction = ProfileDirection;
@@ -93,7 +95,12 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
     onSmartZoom([inEnd, outEnd], 'focus');
   }, [activeDrag, config, geometry, onSmartZoom, selectedPoint]);
 
-  if (viewMode === 'rendered' || !arm || !geometry || !selection || !['arm', 'lane', 'profile-point'].includes(selection.kind)) return null;
+  if (viewMode === 'rendered' || !arm || !geometry || !selection || !['arm', 'arm-node', 'lane', 'profile-point'].includes(selection.kind)) return null;
+
+  // The "propper road" runs between the two ending cross-sections; nothing
+  // outside it can host cross-sections.
+  const roadStart = (profile.find(point => point.endAnchor === 'start') ?? profile[0])?.distance ?? 0;
+  const roadEnd = (profile.find(point => point.endAnchor === 'end') ?? profile[profile.length - 1])?.distance ?? geometry.totalLength;
 
   const localPointer = (event: React.PointerEvent<SVGElement>) => {
     const svg = event.currentTarget.closest('svg');
@@ -105,7 +112,18 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
     const location = atProfileDistance(geometry, section.distance);
     const sideNormal = scale(location.normal, profileDirectionSign(config, dir));
     const bounds = laneBounds(section, dir, laneIndex);
-    return add(location.p, scale(sideNormal, bounds.inner + (bounds.outer - bounds.inner) / 2));
+    const lateral = add(location.p, scale(sideNormal, bounds.inner + (bounds.outer - bounds.inner) / 2));
+    // Cap-end start/end markers sit just past the end of the road, facing away.
+    const capOffset = boundaryIndex < 0 ? -1 : boundaryIndex >= profile.length - 1 ? 1 : 0;
+    return capOffset ? add(lateral, scale(location.tangent, capOffset * 22 * zoom)) : lateral;
+  };
+
+  // Labels align with the road direction but are never upside down.
+  const transitionAngle = (dir: Direction, laneIndex: number, boundaryIndex: number) => {
+    const section = profileTransitionSection(profile, dir, laneIndex, boundaryIndex);
+    const { tangent } = atProfileDistance(geometry, section.distance);
+    const angle = Math.atan2(tangent.y, tangent.x) * 180 / Math.PI;
+    return angle > 90 ? angle - 180 : angle <= -90 ? angle + 180 : angle;
   };
 
   const finishDrag = (event: React.PointerEvent<SVGElement>) => {
@@ -145,9 +163,17 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
     const state = dragRef.current;
     const pointer = localPointer(event);
     if (!state || !pointer) return;
+    const modifiers = dragModifiers(event);
     if (state.kind === 'distance') {
       const distance = projectProfileDistance(geometry, pointer);
-      if (Math.abs(distance - state.startDistance) > .75) state.moved = true;
+      if (Math.abs(distance - state.startDistance) > .75) {
+        if (!state.moved) {
+          const sourceArm = state.original.arms.find(candidate => candidate.id === state.armId);
+          const sourcePoint = sourceArm && getRoadProfile(sourceArm, estimateArmLength(sourceArm)).find(point => point.id === state.pointId);
+          if (sourcePoint?.endAnchor) state.original = convertAnchorToCopy(state.original, state.armId, state.pointId);
+        }
+        state.moved = true;
+      }
       setDraftConfig(moveProfilePoint(state.original, state.armId, state.pointId, distance));
       return;
     }
@@ -155,7 +181,8 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
       const targets = profileTransitionTargets(profile, state.dir, state.laneIndex, state.boundaryIndex);
       const captureRadius = 16 * zoom;
       let target = transitionMagnetRef.current;
-      if (target === null || len(sub(transitionPosition(state.dir, state.laneIndex, target, state.boundaryIndex), pointer)) > captureRadius) {
+      if (modifiers.mod) target = null;
+      else if (target === null || len(sub(transitionPosition(state.dir, state.laneIndex, target, state.boundaryIndex), pointer)) > captureRadius) {
         target = null;
         let nearestDistance = Infinity;
         for (const candidate of targets) {
@@ -175,7 +202,7 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
     if (!sourcePoint) return;
     let value = profileControlValue(sourcePoint, state.dir, state.laneIndex, state.control, offset);
     if (state.control === 'width') {
-      const snapped = snapProfileLaneWidth(sourcePoint, state.dir, state.laneIndex, value);
+      const snapped = modifiers.mod ? { value, matches: [] } : snapProfileLaneWidth(sourcePoint, state.dir, state.laneIndex, value);
       value = snapped.value;
       setWidthSnapMatches(snapped.matches);
       setGapSnapMatches([]);
@@ -184,12 +211,12 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
       const originalLane = (state.dir === 'in' ? sourcePoint.lanesIn : sourcePoint.lanesOut)[state.laneIndex];
       const originalOffset = profileLaneTotalOffset(sourcePoint, state.dir, state.laneIndex);
       const currentOffset = originalOffset - (originalLane?.gap ?? 0) + value;
-      const snapped = snapProfileLaneGap(sourceProfile, state.pointId, state.dir, state.laneIndex, currentOffset);
+      const snapped = modifiers.mod ? { totalOffset: currentOffset, matches: [] } : snapProfileLaneGap(sourceProfile, state.pointId, state.dir, state.laneIndex, currentOffset);
       if (snapped.matches.length) value = (originalLane?.gap ?? 0) + (snapped.totalOffset - originalOffset);
       setGapSnapMatches(snapped.matches);
       setWidthSnapMatches([]);
     }
-    setDraftConfig(setProfileControl(state.original, state.armId, state.pointId, state.dir, state.control, Math.max(0, value), state.laneIndex));
+    setDraftConfig(setProfileControl(state.original, state.armId, state.pointId, state.dir, state.control, Math.max(0, value), state.laneIndex, modifiers.shift));
   };
 
   const startDistanceDrag = (event: React.PointerEvent<SVGElement>, pointId: string) => {
@@ -197,12 +224,7 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
     event.stopPropagation();
     setSelection({ kind: 'profile-point', armId: arm.id, pointId });
     const point = profile.find(candidate => candidate.id === pointId);
-    let original = structuredClone(committedConfig);
-    if (point?.endAnchor) {
-      original = convertAnchorToCopy(original, arm.id, pointId);
-      setCommittedConfig(original);
-    }
-    dragRef.current = { kind: 'distance', armId: arm.id, pointId, startDistance: point?.distance ?? 0, moved: false, original };
+    dragRef.current = { kind: 'distance', armId: arm.id, pointId, startDistance: point?.distance ?? 0, moved: false, original: structuredClone(committedConfig) };
     setDrag({ active: true, type: 'profile-distance' });
     rootRef.current?.setPointerCapture(event.pointerId);
   };
@@ -232,7 +254,7 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
     rootRef.current?.setPointerCapture(event.pointerId);
   };
 
-  const ghostLine = ghost && ghost.armId === arm.id ? (() => {
+  const ghostLine = ghost && ghost.armId === arm.id && ghost.distance > roadStart && ghost.distance < roadEnd ? (() => {
     const section = interpolateProfile(profile, ghost.distance);
     const location = atProfileDistance(geometry, ghost.distance);
     const inPoint = add(location.p, scale(location.normal, profileDirectionSign(config, 'in') * (profileSideOuter(section as RoadProfilePoint, 'in') + 16 * zoom)));
@@ -242,29 +264,46 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
 
   const bands = (['in', 'out'] as const).map(dir => {
     const sign = profileDirectionSign(config, dir);
-    const points = geometry.samples.map(sample => {
+    // The add-cross-section band only covers the propper road.
+    const bandSamples = [
+      { ...atProfileDistance(geometry, roadStart), distance: roadStart },
+      ...geometry.samples.filter(sample => sample.distance > roadStart && sample.distance < roadEnd),
+      { ...atProfileDistance(geometry, roadEnd), distance: roadEnd }
+    ];
+    const outerPoints = bandSamples.map(sample => {
       const section = interpolateProfile(profile, sample.distance);
       return add(sample.p, scale(sample.normal, sign * (profileSideOuter(section as RoadProfilePoint, dir) + 13 * zoom)));
     });
+    const innerPoints = bandSamples.map(sample => {
+      const section = interpolateProfile(profile, sample.distance);
+      return add(sample.p, scale(sample.normal, sign * profileSideInner(section as RoadProfilePoint, dir)));
+    });
+    // Filled ribbon from outer edge to the inner edge of the outermost lane.
+    const ribbonPath = `${profilePointsPath(outerPoints)} L ${innerPoints.slice().reverse().map(point => `${point.x} ${point.y}`).join(' L ')} Z`;
     return (
       <path
         key={`ghost-band-${dir}`}
-        d={profilePointsPath(points)}
-        fill="none"
+        d={ribbonPath}
+        fill="transparent"
         stroke="transparent"
-        strokeWidth="18"
-        vectorEffect="non-scaling-stroke"
-        pointerEvents="stroke"
+        pointerEvents="all"
         cursor="crosshair"
-        data-handle="true"
-        data-tooltip="Add point."
+        data-tooltip="Add cross-section."
         onPointerMove={event => {
           if (dragRef.current) return;
+          // If a higher-priority element is under the cursor, don't show the ghost.
+          const beneath = document.elementsFromPoint(event.clientX, event.clientY);
+          const hasOther = beneath.some(el => el !== event.currentTarget && (el.getAttribute('data-target') || el.getAttribute('data-handle') === 'true'));
+          if (hasOther) { setGhost(null); return; }
           const pointer = localPointer(event);
           if (pointer) setGhost({ armId: arm.id, distance: projectProfileDistance(geometry, pointer) });
         }}
         onPointerLeave={() => { if (!dragRef.current) setGhost(null); }}
         onPointerDown={event => {
+          // Yield to any higher-priority interactive element below.
+          const beneath = document.elementsFromPoint(event.clientX, event.clientY);
+          const hasOther = beneath.some(el => el !== event.currentTarget && (el.getAttribute('data-target') || el.getAttribute('data-handle') === 'true'));
+          if (hasOther) return; // let the event bubble to the element below
           event.preventDefault();
           event.stopPropagation();
           const pointer = localPointer(event);
@@ -286,14 +325,14 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
         const location = atProfileDistance(geometry, point.distance);
         const selected = selectedPoint?.id === point.id;
         const internal = pointIndex > 0 && pointIndex < profile.length - 1;
-        const lineTooltip = selected ? 'Move point.' : 'Select point.';
-        const endpointTooltip = !selected ? 'Select point.' : internal ? 'Drag to move.' : 'Move point.';
+        const lineTooltip = selected ? 'Move cross-section.' : 'Select cross-section.';
+        const endpointTooltip = !selected ? 'Select cross-section.' : internal ? 'Drag to move.' : 'Move cross-section.';
         const inEnd = add(location.p, scale(location.normal, profileDirectionSign(config, 'in') * (profileSideOuter(point, 'in') + 14 * zoom)));
         const outEnd = add(location.p, scale(location.normal, profileDirectionSign(config, 'out') * (profileSideOuter(point, 'out') + 14 * zoom)));
         return (
           <g key={point.id}>
             <line x1={inEnd.x} y1={inEnd.y} x2={outEnd.x} y2={outEnd.y} stroke={selected ? '#2563eb' : '#64748b'} strokeWidth={(selected ? 1.8 : 1) * zoom} opacity={selected ? .88 : .42} pointerEvents="none" />
-            <line x1={inEnd.x} y1={inEnd.y} x2={outEnd.x} y2={outEnd.y} stroke="transparent" strokeWidth="9" vectorEffect="non-scaling-stroke" cursor="move" data-handle="true" data-tooltip={lineTooltip} onPointerDown={event => startDistanceDrag(event, point.id)} />
+            <line x1={inEnd.x} y1={inEnd.y} x2={outEnd.x} y2={outEnd.y} stroke="transparent" strokeWidth="20" vectorEffect="non-scaling-stroke" cursor="move" data-handle="true" data-tooltip={lineTooltip} onPointerDown={event => startDistanceDrag(event, point.id)} />
             {[inEnd, outEnd].map((end, index) => (
               <circle key={index} cx={end.x} cy={end.y} r={(selected ? 5 : 4) * zoom} fill="#fff" stroke={selected ? '#2563eb' : '#64748b'} strokeWidth={2 * zoom} cursor="move" data-handle="true" data-tooltip={endpointTooltip} onPointerDown={event => startDistanceDrag(event, point.id)} />
             ))}
@@ -308,6 +347,7 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
         const added = dir === 'out' ? transition.toPresent : transition.fromPresent;
         const targets = dragging ? profileTransitionTargets(profile, dir, transition.laneIndex, transition.boundaryIndex) : [];
         const isSnapped = transitionDrag?.targetBoundary !== null && transitionDrag?.targetBoundary !== undefined;
+        const angle = transitionAngle(dir, transition.laneIndex, dragging && transitionDrag?.targetBoundary != null ? transitionDrag.targetBoundary : transition.boundaryIndex);
         return (
           <g key={`${dir}-${transition.laneIndex}-transition-${transition.boundaryIndex}`}>
             {targets.map(boundaryIndex => {
@@ -316,8 +356,8 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
               return <circle key={boundaryIndex} cx={point.x} cy={point.y} r={(active ? 10 : 8) * zoom} fill={active ? '#dcfce7' : '#fff'} stroke="#22c55e" strokeWidth={(active ? 3 : 2) * zoom} strokeDasharray={active ? undefined : `${4 * zoom} ${3 * zoom}`} pointerEvents="none" />;
             })}
             {dragging && transitionDrag && len(sub(center, home)) > zoom && <line x1={home.x} y1={home.y} x2={center.x} y2={center.y} stroke="#22c55e" strokeWidth={2 * zoom} strokeDasharray={`${5 * zoom} ${4 * zoom}`} strokeLinecap="round" opacity={isSnapped ? 0.9 : 0.55} pointerEvents="none" />}
-            <g transform={`translate(${center.x} ${center.y})`} cursor="grab" style={dragging && isSnapped ? { transition: 'transform 110ms cubic-bezier(0.2, 1.45, 0.4, 1)' } : undefined} onPointerDown={event => startTransitionDrag(event, dir, transition.laneIndex, transition.boundaryIndex)}>
-              <ProfileTransitionMarker added={added} tooltip={added ? 'Move lane start.' : 'Move lane end.'} scale={zoom} color={profileControlColor(transition.laneIndex)} dragging={dragging} snapped={isSnapped} />
+            <g transform={`translate(${center.x} ${center.y}) rotate(${angle})`} cursor="grab" style={dragging && isSnapped ? { transition: 'transform 110ms cubic-bezier(0.2, 1.45, 0.4, 1)' } : undefined} onPointerDown={event => startTransitionDrag(event, dir, transition.laneIndex, transition.boundaryIndex)}>
+              <ProfileTransitionMarker added={added} tooltip={added ? 'Move lane start.' : 'Move lane end.'} keyHints={dataKeys(HINT.noSnap)} scale={zoom} color={profileControlColor(transition.laneIndex)} dragging={dragging} snapped={isSnapped} />
             </g>
           </g>
         );
@@ -362,11 +402,11 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
             const widthTooltip = 'Adjust width.';
             controls.push(
               <g key={`${dir}-${laneIndex}-gap`} cursor="grab" onPointerDown={event => startControlDrag(event, selectedPoint, dir, 'gap', laneIndex)}>
-                <circle cx={shiftCenter.x} cy={shiftCenter.y} r={9 * zoom} fill="transparent" data-handle="true" data-tooltip="Shift lane." />
+                <circle cx={shiftCenter.x} cy={shiftCenter.y} r={9 * zoom} fill="transparent" data-handle="true" data-tooltip="Shift lane." data-keys={dataKeys(HINT.isolateSection, HINT.noSnap)} />
                 <ProfileControlIcon kind="gap" color={color} transform={profilePointerTransform(shiftCenter, travel, sideNormal, zoom, 4, 4)} />
               </g>,
               <g key={`${dir}-${laneIndex}-width`} cursor="grab" onPointerDown={event => startControlDrag(event, selectedPoint, dir, 'width', laneIndex)}>
-                <circle cx={widthCenter.x} cy={widthCenter.y} r={9 * zoom} fill="transparent" data-handle="true" data-tooltip={widthTooltip} />
+                <circle cx={widthCenter.x} cy={widthCenter.y} r={9 * zoom} fill="transparent" data-handle="true" data-tooltip={widthTooltip} data-keys={dataKeys(HINT.isolateSection, HINT.noSnap)} />
                 <ProfileControlIcon kind="width" color={color} transform={profilePointerTransform(widthCenter, travel, sideNormal, zoom, 4, 0, true)} />
               </g>
             );
@@ -384,7 +424,7 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
               const tooltip = mover.kind === 'start' ? 'Shift lane start.' : 'Shift lane end.';
               controls.push(
                 <g key={`${dir}-${laneIndex}-${mover.kind}-mover-${mover.pointId}`} cursor="grab" onPointerDown={event => startControlDrag(event, moverPoint, dir, 'gap', laneIndex)}>
-                  <circle cx={center.x} cy={center.y} r={9 * zoom} fill="transparent" data-handle="true" data-tooltip={tooltip} />
+                  <circle cx={center.x} cy={center.y} r={9 * zoom} fill="transparent" data-handle="true" data-tooltip={tooltip} data-keys={dataKeys(HINT.isolateSection, HINT.noSnap)} />
                   <ProfileControlIcon kind="gap" color={color} transform={profilePointerTransform(center, moverTravel, moverSideNormal, zoom, 4, 4)} />
                 </g>
               );

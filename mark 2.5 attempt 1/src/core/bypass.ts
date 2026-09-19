@@ -1,5 +1,6 @@
-import { type ArmConfig, type RightTurnBypass, type RoundaboutConfig, type SelectionTarget } from '../config/types';
-import { add, angleOf, cross, dot, norm, perpLeft, scale, sub } from '../math/vector';
+import { type ArmConfig, type RingConfig, type RightTurnBypass, type RoundaboutConfig, type SelectionTarget } from '../config/types';
+import { add, angleOf, cross, dot, len, norm, perpLeft, scale, sub, type Vec2 } from '../math/vector';
+import { numericFloorLift, resolveLiveFloor } from './liveFloor';
 
 type LaneTarget = Extract<SelectionTarget, { kind: 'lane' }>;
 
@@ -64,6 +65,145 @@ export function createRightTurnBypass(config: RoundaboutConfig, entry: LaneTarge
     lanePoint: scale(outwardNormal, clearance),
     laneAngle: angleOf(direction)
   };
+}
+
+export function nearestRingOuterEdge(rings: RingConfig[], point: Vec2) {
+  return rings.reduce<RingConfig | undefined>((nearest, ring) => {
+    if (!nearest) return ring;
+    const gap = Math.abs(len(sub(point, ring.center)) - ring.radius - ring.width / 2);
+    const nearestGap = Math.abs(len(sub(point, nearest.center)) - nearest.radius - nearest.width / 2);
+    return gap < nearestGap ? ring : nearest;
+  }, undefined);
+}
+
+/**
+ * Minimum gap (world units) required between a bypass lanePoint and any
+ * surrounding pavement edge: lane pavement, ring outer edges, and the
+ * center island. Below this the connector solve degenerates — tangent
+ * points can land on zero-width lane sections and the bypass lane's
+ * pavement ends up inside the lanes it bypasses.
+ */
+export const BYPASS_LANE_POINT_CLEARANCE = 2;
+
+/**
+ * Maximum connector-solve score that still counts as a viable placement.
+ * The score is the sum of squared distances from each connector's tangent
+ * point to the lane path it should attach to. A tangent that lands off the
+ * path (score ≫ 1) renders as a bypass "connected to nothing", so viability
+ * requires the tangent to sit essentially on the lane polyline.
+ */
+export const BYPASS_CONNECTOR_MAX_SCORE = 4;
+
+const FLOOR_COARSE_STEP = 2;
+const FLOOR_FINE_STEP = 0.25;
+const FLOOR_MAX_TRAVEL = 800;
+
+/** A lane centerline path plus its per-sample widths — the pavement obstacle
+ *  a bypass lanePoint must stay clear of. */
+export type LanePointObstacle = { points: Vec2[]; widths: number[] };
+
+export type BypassLanePointFloorContext = {
+  /** Lane paths the point must keep BYPASS_LANE_POINT_CLEARANCE from. */
+  lanePaths: Iterable<LanePointObstacle>;
+  /**
+   * Extra viability predicate evaluated at candidate positions — e.g.
+   * "the bypass connectors can actually attach here". A floor candidate
+   * must be viable AND keep its pavement clearance, and viability must
+   * persist one coarse step further out so the floor never stops on a
+   * knife-edge where the solve flickers in and out.
+   */
+  viable?: (point: Vec2) => boolean;
+};
+
+function pointToSegmentDistance(point: Vec2, a: Vec2, b: Vec2) {
+  const edge = sub(b, a);
+  const edgeLengthSquared = dot(edge, edge);
+  const t = edgeLengthSquared < 1e-9 ? 0 : Math.max(0, Math.min(1, dot(sub(point, a), edge) / edgeLengthSquared));
+  return len(sub(point, add(a, scale(edge, t))));
+}
+
+/** Distance from a point to a lane path's pavement edge (negative = inside). */
+function lanePavementDistance(point: Vec2, path: LanePointObstacle) {
+  let min = Infinity;
+  const { points, widths } = path;
+  for (let i = 0; i < points.length - 1; i++) {
+    const halfWidth = ((widths[i] ?? 0) + (widths[i + 1] ?? 0)) / 4;
+    if (halfWidth < 0.025) continue; // zero-width stretches have no pavement
+    min = Math.min(min, pointToSegmentDistance(point, points[i], points[i + 1]) - halfWidth);
+  }
+  return min;
+}
+
+export type BypassLanePointFloor = {
+  /** Center the placement ray is measured from (nearest ring, else island). */
+  center: Vec2;
+  /** Unit direction from `center` through the requested point. */
+  dir: Vec2;
+  /** Minimum radial distance from `center` that clears all pavement. */
+  radius: number;
+};
+
+/**
+ * Live Floor for a bypass lanePoint — see docs/LIVE-FLOOR.md.
+ *
+ * Returns null when the requested point already clears every lane path,
+ * ring outer edge, and the island by BYPASS_LANE_POINT_CLEARANCE. Otherwise
+ * walks the point outward along the same radial ray the lane-point drag
+ * uses (from the nearest ring's center through the requested point) until
+ * every obstacle is clear, then reports that radius as the floor. Checking
+ * ALL obstacles each step matters: escaping one lane can push the point
+ * into another.
+ */
+export function bypassLanePointFloor(
+  config: RoundaboutConfig,
+  requested: Vec2,
+  context: BypassLanePointFloorContext
+): BypassLanePointFloor | null {
+  const { lanePaths, viable } = context;
+  const paths = [...lanePaths];
+  const clearanceAt = (point: Vec2) => {
+    let clearance = len(sub(point, config.island.center)) - config.island.radius;
+    for (const ring of config.rings) {
+      clearance = Math.min(clearance, len(sub(point, ring.center)) - ring.radius - ring.width / 2);
+    }
+    for (const path of paths) clearance = Math.min(clearance, lanePavementDistance(point, path));
+    return clearance;
+  };
+  const ok = (point: Vec2) => clearanceAt(point) >= BYPASS_LANE_POINT_CLEARANCE && (!viable || viable(point));
+  if (ok(requested)) return null;
+  const center = nearestRingOuterEdge(config.rings, requested)?.center ?? config.island.center;
+  const radial = sub(requested, center);
+  const radialLength = len(radial);
+  const dir = radialLength > 1e-9 ? scale(radial, 1 / radialLength) : { x: 1, y: 0 };
+  const at = (radius: number): Vec2 => ({ x: center.x + dir.x * radius, y: center.y + dir.y * radius });
+  const limit = radialLength + FLOOR_MAX_TRAVEL;
+  for (let radius = radialLength + FLOOR_COARSE_STEP; radius <= limit; radius += FLOOR_COARSE_STEP) {
+    if (!ok(at(radius)) || !ok(at(radius + FLOOR_COARSE_STEP))) continue;
+    for (let fine = radius - FLOOR_COARSE_STEP + FLOOR_FINE_STEP; fine <= radius; fine += FLOOR_FINE_STEP) {
+      if (ok(at(fine))) return { center, dir, radius: fine };
+    }
+    return { center, dir, radius };
+  }
+  return { center, dir, radius: limit };
+}
+
+/**
+ * Resolved lanePoint for a bypass: the user's requested point, lifted along
+ * its ring radial to the live floor when the floor is above it. The stored
+ * config value is never touched, so the user's placement is restored as
+ * soon as surrounding geometry moves back out of the way.
+ */
+export function resolveBypassLanePoint(
+  config: RoundaboutConfig,
+  requested: Vec2,
+  context: BypassLanePointFloorContext
+): Vec2 {
+  const floor = bypassLanePointFloor(config, requested, context);
+  if (!floor) return requested;
+  const requestedRadius = len(sub(requested, floor.center));
+  const resolvedRadius = resolveLiveFloor(requestedRadius, floor.radius, numericFloorLift).resolved;
+  const point = { x: floor.center.x + floor.dir.x * resolvedRadius, y: floor.center.y + floor.dir.y * resolvedRadius };
+  return { x: Math.round(point.x * 10) / 10, y: Math.round(point.y * 10) / 10 };
 }
 
 export function connectBypassLanes(config: RoundaboutConfig, source: LaneTarget, target: LaneTarget, radius = 32): RoundaboutConfig | null {

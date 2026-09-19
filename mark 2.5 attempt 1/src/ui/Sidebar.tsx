@@ -223,7 +223,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
                 if (connection.toArmId === oldId) connection.toArmId = newId;
               });
             });
-            if ((selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'profile-point') && selection.armId === arm.id) {
+            if ((selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'arm-node' || selection?.kind === 'profile-point') && selection.armId === arm.id) {
               setSelection({ ...selection, armId: newId });
             }
           }} style={{marginLeft: 4, width: 150}} />
@@ -428,7 +428,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
       {!selection && renderGlobal()}
       {selection?.kind === 'island' && renderIsland()}
       {selection?.kind === 'ring' && renderRing(selection.ringId)}
-      {(selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'profile-point') && renderArm(selection.armId)}
+      {(selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'arm-node' || selection?.kind === 'profile-point') && renderArm(selection.armId)}
     </div>
   );
 });

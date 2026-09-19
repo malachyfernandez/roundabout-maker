@@ -23,11 +23,23 @@ export function isProfileLanePresent(lane: ProfileLane | undefined) {
 export function profileLaneTransitions(profile: RoadProfilePoint[], dir: 'in' | 'out'): ProfileLaneTransition[] {
   const laneCount = Math.max(0, ...profile.map(point => (dir === 'in' ? point.lanesIn : point.lanesOut).length));
   const transitions: ProfileLaneTransition[] = [];
+  const laneAt = (index: number, laneIndex: number) =>
+    index >= 0 && index < profile.length
+      ? (dir === 'in' ? profile[index].lanesIn : profile[index].lanesOut)[laneIndex]
+      : undefined;
   for (let laneIndex = 0; laneIndex < laneCount; laneIndex++) {
+    // Boundary -1 is the road's start cap-end, boundary length - 1 is the end
+    // cap-end; a lane present at a cap-end gets a transition marker there.
+    if (isProfileLanePresent(laneAt(0, laneIndex))) {
+      transitions.push({ laneIndex, boundaryIndex: -1, fromPresent: false, toPresent: true });
+    }
     for (let boundaryIndex = 0; boundaryIndex < profile.length - 1; boundaryIndex++) {
-      const fromPresent = isProfileLanePresent((dir === 'in' ? profile[boundaryIndex].lanesIn : profile[boundaryIndex].lanesOut)[laneIndex]);
-      const toPresent = isProfileLanePresent((dir === 'in' ? profile[boundaryIndex + 1].lanesIn : profile[boundaryIndex + 1].lanesOut)[laneIndex]);
+      const fromPresent = isProfileLanePresent(laneAt(boundaryIndex, laneIndex));
+      const toPresent = isProfileLanePresent(laneAt(boundaryIndex + 1, laneIndex));
       if (fromPresent !== toPresent) transitions.push({ laneIndex, boundaryIndex, fromPresent, toPresent });
+    }
+    if (isProfileLanePresent(laneAt(profile.length - 1, laneIndex))) {
+      transitions.push({ laneIndex, boundaryIndex: profile.length - 1, fromPresent: true, toPresent: false });
     }
   }
   return transitions;
@@ -121,6 +133,21 @@ export function laneOffsetAt(section: ProfileSection, laneIndex: number, isEntry
 export function insertProfilePoint(arm: ArmConfig, distance: number, totalLength: number): RoadProfilePoint[] {
   const profile = getRoadProfile(arm, totalLength);
   const section = interpolateProfile(profile, distance);
+  const upperIndex = profile.findIndex(point => point.distance >= distance);
+  const lower = upperIndex > 0 ? profile[upperIndex - 1] : undefined;
+  const upper = upperIndex >= 0 ? profile[upperIndex] : undefined;
+  if (lower && upper) {
+    // A lane that starts or ends between the neighbors keeps its whole taper in
+    // the longer of the two new segments: copy the nearer neighbor's lane state
+    // rather than leaving a partial interpolated width at the new point.
+    const nearer = distance - lower.distance <= upper.distance - distance ? lower : upper;
+    for (const key of ['lanesIn', 'lanesOut'] as const) {
+      section[key] = section[key].map((lane, laneIndex) =>
+        isProfileLanePresent(lower[key][laneIndex]) === isProfileLanePresent(upper[key][laneIndex])
+          ? lane
+          : structuredClone(nearer[key][laneIndex] ?? { width: 0, gap: 0 }));
+    }
+  }
   profile.push({
     id: `${arm.id}_profile_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
     distance,

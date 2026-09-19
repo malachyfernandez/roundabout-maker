@@ -30,6 +30,10 @@ export type ArmNode = {
   point: Vec2; // {x, y}
   tangentIn?: Vec2;
   tangentOut?: Vec2;
+  splitRestore?: {
+    previous: { nodeId: string; tangentIn?: Vec2; tangentOut?: Vec2 };
+    next: { nodeId: string; tangentIn?: Vec2; tangentOut?: Vec2 };
+  };
   medianWidth: number;
   // Per-lane widths at this node cross-section
   laneWidthsIn: number[];
@@ -84,5 +88,6 @@ export type SelectionTarget =
   | { kind: "island" }
   | { kind: "ring"; ringId: string }
   | { kind: "arm"; armId: string }
+  | { kind: "arm-node"; armId: string; nodeId: string }
   | { kind: "lane"; armId: string; dir: "in" | "out"; laneIndex: number }
   | { kind: "profile-point"; armId: string; pointId: string };

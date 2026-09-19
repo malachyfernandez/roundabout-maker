@@ -58,11 +58,11 @@ export function computeEndAnchorDistance(
 
   if (!divergences || divergences[endpoint].length === 0) return roadEnd;
 
-  // The last lane to diverge is the one closest to the roundabout.
-  // For 'start' (roundabout at distance 0): minimum tangent distance.
-  // For 'end' (roundabout at distance totalLength): maximum tangent distance.
+  // The first lane to diverge is the one farthest from the roundabout.
+  // For 'start' (roundabout at distance 0): maximum tangent distance.
+  // For 'end' (roundabout at distance totalLength): minimum tangent distance.
   const distances = divergences[endpoint];
-  return endpoint === 'start' ? Math.min(...distances) : Math.max(...distances);
+  return endpoint === 'start' ? Math.max(...distances) : Math.min(...distances);
 }
 
 export function normalizeProfileAnchors(config: RoundaboutConfig): RoundaboutConfig {
@@ -83,32 +83,51 @@ export function normalizeProfileAnchors(config: RoundaboutConfig): RoundaboutCon
     for (const endpoint of ['start', 'end'] as const) {
       const correctDistance = computeEndAnchorDistance(endpoint, geometry, divergences.get(arm.id));
 
-      // Find existing anchor for this endpoint
+      // Only one auto-placed anchor may exist per endpoint; drop stale extras.
+      let anchorSeen = false;
+      arm.profile = arm.profile.filter(point => {
+        if (point.endAnchor !== endpoint) return true;
+        if (anchorSeen) return false;
+        anchorSeen = true;
+        return true;
+      });
+
       const existing = arm.profile.find(p => p.endAnchor === endpoint);
       if (existing) {
-        // Clamp to not overlap with neighboring non-anchor points
-        const sorted = [...arm.profile].sort((a, b) => a.distance - b.distance);
-        const others = sorted.filter(p => p.endAnchor !== endpoint);
-        if (endpoint === 'start') {
-          const upper = others.length > 0 ? others[0].distance - 1 : totalLength;
-          existing.distance = Math.min(correctDistance, upper);
-        } else {
-          const lower = others.length > 0 ? others[others.length - 1].distance + 1 : 0;
-          existing.distance = Math.max(correctDistance, lower);
-        }
+        // The ending cross-section always sits exactly at the first divergence
+        // (or the road edge when that end touches no ring) — never clamped by
+        // other sections; anything beyond it is pruned below instead.
+        existing.distance = correctDistance;
       } else {
-        // Add a new anchor at the correct position, interpolating cross-section
-        const section: ProfileSection = interpolateProfile(arm.profile, correctDistance);
-        const anchorPoint: RoadProfilePoint = {
-          id: `${arm.id}_profile_anchor_${endpoint}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
-          distance: correctDistance,
-          medianWidth: section.medianWidth,
-          lanesIn: section.lanesIn,
-          lanesOut: section.lanesOut,
-          endAnchor: endpoint
-        };
-        arm.profile.push(anchorPoint);
+        // Adopt an unmarked section already sitting at that spot rather than
+        // stacking a duplicate on top of it.
+        const adoptable = arm.profile.find(p => !p.endAnchor && Math.abs(p.distance - correctDistance) < 1e-6);
+        if (adoptable) {
+          adoptable.endAnchor = endpoint;
+        } else {
+          const section: ProfileSection = interpolateProfile([...arm.profile].sort((a, b) => a.distance - b.distance), correctDistance);
+          const anchorPoint: RoadProfilePoint = {
+            id: `${arm.id}_profile_anchor_${endpoint}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+            distance: correctDistance,
+            medianWidth: section.medianWidth,
+            lanesIn: section.lanesIn,
+            lanesOut: section.lanesOut,
+            endAnchor: endpoint
+          };
+          arm.profile.push(anchorPoint);
+        }
       }
+    }
+
+    // The "propper road" runs between the two ending cross-sections. Sections
+    // beyond them — e.g. stranded when an anchor moves inward after a new ring
+    // appears on that end — are deleted.
+    const startCap = arm.profile.find(p => p.endAnchor === 'start');
+    const endCap = arm.profile.find(p => p.endAnchor === 'end');
+    if (startCap && endCap) {
+      const lower = Math.min(startCap.distance, endCap.distance);
+      const upper = Math.max(startCap.distance, endCap.distance);
+      arm.profile = arm.profile.filter(point => point.endAnchor || (point.distance >= lower && point.distance <= upper));
     }
 
     arm.profile.sort((a, b) => a.distance - b.distance);
@@ -134,14 +153,21 @@ export function convertAnchorToCopy(original: RoundaboutConfig, armId: string, p
   const divergences = collectDivergenceDistances(next, new Map([[arm.id, geometry]]));
   const correctDistance = computeEndAnchorDistance(endpoint, geometry, divergences.get(arm.id));
   const section = interpolateProfile(arm.profile, correctDistance);
-  arm.profile.push({
+  const anchorPoint: RoadProfilePoint = {
     id: `${arm.id}_profile_anchor_${endpoint}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
     distance: correctDistance,
     medianWidth: section.medianWidth,
     lanesIn: section.lanesIn,
     lanesOut: section.lanesOut,
     endAnchor: endpoint
-  });
+  };
+  // The copy usually sits at the same distance as the fresh anchor. Insert the
+  // anchor so the stable sort leaves it outside the copy — 'start' before it,
+  // 'end' after it — keeping the copy confined to the propper road.
+  const insertAt = endpoint === 'start'
+    ? arm.profile.findIndex(p => p.distance >= correctDistance)
+    : arm.profile.findIndex(p => p.distance > correctDistance);
+  arm.profile.splice(insertAt < 0 ? arm.profile.length : insertAt, 0, anchorPoint);
   arm.profile.sort((a, b) => a.distance - b.distance);
   return next;
 }

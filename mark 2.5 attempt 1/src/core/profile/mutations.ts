@@ -8,7 +8,8 @@ export function setProfileControl(
   dir: 'in' | 'out',
   kind: 'median' | 'gap' | 'width',
   value: number,
-  laneIndex = 0
+  laneIndex = 0,
+  isolate = false
 ): RoundaboutConfig {
   const next = structuredClone(original);
   const arm = next.arms.find(candidate => candidate.id === armId);
@@ -34,7 +35,7 @@ export function setProfileControl(
   if (kind === 'width') {
     const originalWidth = selectedLane.width;
     let cursor = pointIndex + step;
-    while (cursor >= 0 && cursor < arm.profile.length) {
+    while (!isolate && cursor >= 0 && cursor < arm.profile.length) {
       const lane = laneAt(arm.profile[cursor]);
       if (!lane || !isProfileLanePresent(lane) || Math.abs(lane.width - originalWidth) > .01) break;
       indices.push(cursor);
@@ -49,7 +50,7 @@ export function setProfileControl(
   const selectedOriginalOffset = laneBounds(selectedPoint, dir, laneIndex).inner - selectedPoint.medianWidth / 2;
   const delta = value - selectedLane.gap;
   let cursor = pointIndex + step;
-  while (cursor >= 0 && cursor < arm.profile.length) {
+  while (!isolate && cursor >= 0 && cursor < arm.profile.length) {
     const point = arm.profile[cursor];
     const lane = laneAt(point);
     if (!lane || !isProfileLanePresent(lane)) break;
@@ -87,7 +88,15 @@ export function addProfilePoint(original: RoundaboutConfig, armId: string, dista
   const arm = next.arms.find(candidate => candidate.id === armId);
   if (!arm) return { config: next, pointId: null };
   const totalLength = estimateArmLength(arm);
-  arm.profile = insertProfilePoint(arm, Math.max(0, Math.min(totalLength, distance)), totalLength);
+  const profile = getRoadProfile(arm, totalLength);
+  // Cross-sections only live inside the "propper road" between the two ending
+  // cross-sections; clicks beyond them add nothing.
+  const startCap = profile.find(p => p.endAnchor === 'start') ?? profile[0];
+  const endCap = profile.find(p => p.endAnchor === 'end') ?? profile[profile.length - 1];
+  const lower = (startCap?.distance ?? 0) + 1;
+  const upper = (endCap?.distance ?? totalLength) - 1;
+  if (distance < lower || distance > upper) return { config: original, pointId: null };
+  arm.profile = insertProfilePoint(arm, distance, totalLength);
   const point = arm.profile.reduce((best, candidate) => Math.abs(candidate.distance - distance) < Math.abs(best.distance - distance) ? candidate : best);
   return { config: next, pointId: point.id };
 }
@@ -115,15 +124,17 @@ export function moveProfileLaneTransition(
   const next = structuredClone(original);
   const arm = next.arms.find(candidate => candidate.id === armId);
   if (!arm) return next;
-  arm.profile = getRoadProfile(arm, estimateArmLength(arm));
-  const source = Math.max(0, Math.min(arm.profile.length - 2, boundaryIndex));
-  const target = Math.max(0, Math.min(arm.profile.length - 2, targetBoundaryIndex));
+  const profile = arm.profile = getRoadProfile(arm, estimateArmLength(arm));
+  // Boundaries run from -1 (the start cap-end) to length - 1 (the end cap-end)
+  // so lane starts and ends can sit on either end of the road.
+  const source = Math.max(-1, Math.min(profile.length - 1, boundaryIndex));
+  const target = Math.max(-1, Math.min(profile.length - 1, targetBoundaryIndex));
   if (source === target) return next;
-  const sourceLanes = dir === 'in' ? arm.profile[source].lanesIn : arm.profile[source].lanesOut;
-  const nextLanes = dir === 'in' ? arm.profile[source + 1].lanesIn : arm.profile[source + 1].lanesOut;
-  if (isProfileLanePresent(sourceLanes[laneIndex]) === isProfileLanePresent(nextLanes[laneIndex])) return next;
-  const templatePoint = target > source ? arm.profile[source] : arm.profile[source + 1];
-  const template = structuredClone((dir === 'in' ? templatePoint.lanesIn : templatePoint.lanesOut)[laneIndex] ?? { width: 0, gap: 0 });
+  const laneAt = (index: number) => index >= 0 && index < profile.length
+    ? (dir === 'in' ? profile[index].lanesIn : profile[index].lanesOut)[laneIndex]
+    : undefined;
+  if (isProfileLanePresent(laneAt(source)) === isProfileLanePresent(laneAt(source + 1))) return next;
+  const template = structuredClone(laneAt(target > source ? source : source + 1) ?? { width: 0, gap: 0 });
   const first = Math.min(source, target) + 1;
   const last = Math.max(source, target);
   for (let index = first; index <= last; index++) {
@@ -140,8 +151,12 @@ export function addProfileLane(original: RoundaboutConfig, armId: string, pointI
   if (!arm) return next;
   const totalLength = estimateArmLength(arm);
   arm.profile = getRoadProfile(arm, totalLength);
-  const start = arm.profile.find(point => point.id === pointId);
+  const startIndex = arm.profile.findIndex(point => point.id === pointId);
+  const start = arm.profile[startIndex];
   if (!start) return next;
+  // A lane added on a cap-end behaves as if added from the beginning of the
+  // road: it spans every cross-section instead of stopping at the cap-end.
+  const atCapEnd = startIndex === 0 || startIndex === arm.profile.length - 1;
   const topology = dir === 'in' ? arm.lanesIn : arm.lanesOut;
   const index = Math.max(0, Math.min(topology.length, insertIndex));
   if (dir === 'in') {
@@ -153,7 +168,7 @@ export function addProfileLane(original: RoundaboutConfig, armId: string, pointI
   }
   for (const point of arm.profile) {
     const lanes = dir === 'in' ? point.lanesIn : point.lanesOut;
-    const downstream = dir === 'in' ? point.distance <= start.distance : point.distance >= start.distance;
+    const downstream = atCapEnd || (dir === 'in' ? point.distance <= start.distance : point.distance >= start.distance);
     lanes.splice(index, 0, { width: downstream ? 10 : 0, gap: 0 });
   }
   for (const node of arm.nodes) (dir === 'in' ? node.laneWidthsIn : node.laneWidthsOut).splice(index, 0, 10);

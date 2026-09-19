@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { type RoundaboutConfig } from '../../config/types';
-import { addProfileLane, moveProfileLaneTransition, moveProfilePoint, removeProfileLane, removeProfilePoint, setProfileControl } from './mutations';
+import { addProfileLane, addProfilePoint, moveProfileLaneTransition, moveProfilePoint, removeProfileLane, removeProfilePoint, setProfileControl } from './mutations';
 
 const config = (): RoundaboutConfig => ({
   island: { center: { x: 0, y: 0 }, radius: 20 },
@@ -52,6 +52,12 @@ describe('profile mutations', () => {
     expect(next.arms[0].profile?.map(point => point.lanesOut[0].gap)).toEqual([6, 5, 0, 0]);
   });
 
+  it('limits gap and width changes to the dragged cross-section when isolated', () => {
+    const source = config();
+    expect(setProfileControl(source, 'arm', 'a', 'out', 'gap', 6, 0, true).arms[0].profile?.map(point => point.lanesOut[0].gap)).toEqual([6, 0, 0, 0]);
+    expect(setProfileControl(source, 'arm', 'b', 'out', 'width', 14, 0, true).arms[0].profile?.map(point => point.lanesOut[0].width)).toEqual([10, 14, 10, 10]);
+  });
+
   it('propagates a gap change across points whose total offset matches despite differing gap values', () => {
     const source = config();
     source.arms[0].lanesOut.push({ filletRadius: 40, dropsRing: false });
@@ -76,6 +82,61 @@ describe('profile mutations', () => {
   it('moves a lane transition while preserving the present lane template', () => {
     const next = moveProfileLaneTransition(config(), 'arm', 'in', 0, 0, 2);
     expect(next.arms[0].profile?.map(point => point.lanesIn[0].width)).toEqual([10, 10, 10, 0]);
+  });
+
+  it('pulls a lane start or end inward from a cap-end transition', () => {
+    expect(moveProfileLaneTransition(config(), 'arm', 'out', 0, 3, 1).arms[0].profile?.map(point => point.lanesOut[0].width)).toEqual([10, 10, 0, 0]);
+    expect(moveProfileLaneTransition(config(), 'arm', 'out', 0, -1, 1).arms[0].profile?.map(point => point.lanesOut[0].width)).toEqual([0, 0, 10, 10]);
+  });
+
+  it('extends a lane onto a cap-end when its transition is dragged there', () => {
+    const source = config();
+    source.arms[0].profile![0].lanesIn[0].width = 0;
+    source.arms[0].profile![1].lanesIn[0].width = 10;
+    const next = moveProfileLaneTransition(source, 'arm', 'in', 0, 0, -1);
+    expect(next.arms[0].profile?.map(point => point.lanesIn[0].width)).toEqual([10, 10, 0, 0]);
+  });
+
+  it('spans the whole road when a lane is added on a cap-end cross-section', () => {
+    const atStart = addProfileLane(config(), 'arm', 'a', 'in', 1);
+    expect(atStart.arms[0].profile?.map(point => point.lanesIn[1].width)).toEqual([10, 10, 10, 10]);
+    const atEnd = addProfileLane(config(), 'arm', 'd', 'out', 1);
+    expect(atEnd.arms[0].profile?.map(point => point.lanesOut[1].width)).toEqual([10, 10, 10, 10]);
+  });
+
+  it('keeps a lane end taper in the longer segment when a point is inserted near the present neighbor', () => {
+    const added = addProfilePoint(config(), 'arm', 3).config.arms[0].profile!;
+    expect(added.map(point => point.distance)).toEqual([0, 3, 10, 20, 30]);
+    expect(added.map(point => point.lanesIn[0].width)).toEqual([10, 10, 0, 0, 0]);
+  });
+
+  it('keeps a lane end taper in the longer segment when a point is inserted near the absent neighbor', () => {
+    const added = addProfilePoint(config(), 'arm', 8).config.arms[0].profile!;
+    expect(added.map(point => point.lanesIn[0].width)).toEqual([10, 0, 0, 0, 0]);
+  });
+
+  it('keeps a lane start taper in the longer segment on either side of the insertion', () => {
+    const source = config();
+    source.arms[0].profile![2].lanesIn[0] = { width: 10, gap: 0 };
+    const nearAbsent = addProfilePoint(source, 'arm', 13).config.arms[0].profile!;
+    expect(nearAbsent.map(point => point.lanesIn[0].width)).toEqual([10, 0, 0, 10, 0]);
+    const nearPresent = addProfilePoint(source, 'arm', 18).config.arms[0].profile!;
+    expect(nearPresent.map(point => point.lanesIn[0].width)).toEqual([10, 0, 10, 10, 0]);
+  });
+
+  it('rejects cross-sections outside the propper road between the ending cross-sections', () => {
+    expect(addProfilePoint(config(), 'arm', -5).pointId).toBeNull();
+    expect(addProfilePoint(config(), 'arm', 0).pointId).toBeNull();
+    expect(addProfilePoint(config(), 'arm', 30).pointId).toBeNull();
+    expect(addProfilePoint(config(), 'arm', 35).pointId).toBeNull();
+    expect(addProfilePoint(config(), 'arm', 15).pointId).not.toBeNull();
+  });
+
+  it('still interpolates lanes whose presence does not change across the insertion', () => {
+    const source = config();
+    for (const point of source.arms[0].profile!.slice(1)) point.lanesOut[0] = { width: 20, gap: 0 };
+    const added = addProfilePoint(source, 'arm', 4).config.arms[0].profile!;
+    expect(added[1].lanesOut[0].width).toBe(14);
   });
 
   it('clamps point movement between neighboring profile stations', () => {

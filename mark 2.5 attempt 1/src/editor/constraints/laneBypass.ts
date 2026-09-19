@@ -1,6 +1,9 @@
-import { type RingConfig, type RoundaboutConfig } from '../../config/types';
+import { type RoundaboutConfig } from '../../config/types';
 import { type Vec2, dot, len, scale, sub } from '../../math/vector';
 import { laneFilletRadiusAtEndpoint, laneRoleAtEndpoint, type RoadEndpoint } from '../../core/routes';
+import { nearestRingOuterEdge } from '../../core/bypass';
+
+export { nearestRingOuterEdge };
 
 export function dragLaneFilletRadius(armId: string, dir: 'in' | 'out', laneIndex: number, endpoint: RoadEndpoint, centerRate: Vec2, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
   const next = structuredClone(original);
@@ -31,15 +34,6 @@ export function dragBypassConnectorRadius(bypassId: string, connector: 'entry' |
   if (connector === 'entry') bypass.entryRadius = radius;
   else bypass.exitRadius = radius;
   return next;
-}
-
-export function nearestRingOuterEdge(rings: RingConfig[], point: Vec2) {
-  return rings.reduce<RingConfig | undefined>((nearest, ring) => {
-    if (!nearest) return ring;
-    const gap = Math.abs(len(sub(point, ring.center)) - ring.radius - ring.width / 2);
-    const nearestGap = Math.abs(len(sub(point, nearest.center)) - nearest.radius - nearest.width / 2);
-    return gap < nearestGap ? ring : nearest;
-  }, undefined);
 }
 
 export function dragBypassLanePoint(bypassId: string, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {

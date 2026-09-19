@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { ArrowLeftRight, Trash2 } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import { type ArmConfig, type RoundaboutConfig } from '../config/types';
 import { type ResolvedSegment } from '../core/solver';
 import { useEditorStore } from '../editor/editorStore';
@@ -13,7 +13,7 @@ import { DELETE_SHORTCUT, matchesShortcut } from '../ui/keyboard';
 import { screenToWorld, worldToScreen } from './transform';
 import { type Vec2, len, sub } from '../math/vector';
 import { connectBypassLanes, isRightTurnPair } from '../core/bypass';
-import { swapArmDirection } from '../editor/constraints';
+import { removeArmNode } from '../editor/constraints';
 import { resolveLaneRing } from '../core/routes';
 import { estimateArmLength, getRoadProfile, removeProfileLane, removeProfilePoint } from '../core/profile';
 import { sampleSpline } from '../math/spline';
@@ -34,7 +34,7 @@ const CULL_MARGIN_RATIO = 0.22;
 
 // ---- Pan performance instrumentation (temporary diagnostic, commented out) ----
 // To re-enable: uncomment this block and all panPerf* call sites below.
-// See context-pan-performance.md in src/utils/ for full details.
+// See docs/context-pan-performance.md at the project root for full details.
 //
 // type PanPerfSample = {
 //   phase: 'wheel' | 'pointermove' | 'rAF-apply' | 'rAF-commit' | 'layout-effect' | 'momentum';
@@ -707,8 +707,8 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
             anchorPoint={actionAnchor}
             defaultOffset={{ x: 16, y: -48 }}
             bounds={{ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }}
-            label="Delete Lane Point"
-            tooltip={canDelete ? 'Delete this lane point.' : 'The first and last lane points cannot be deleted.'}
+            label="Delete Cross-section"
+            tooltip={canDelete ? 'Delete this cross-section.' : 'The first and last cross-sections cannot be deleted.'}
             shortcut={DELETE_SHORTCUT}
             icon={<Trash2 size={14} />}
             disabled={!canDelete}
@@ -719,7 +719,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
           />
         );
       })()}
-      {effectsEnabled && selection?.kind === 'arm' && svgRef.current && (() => {
+      {effectsEnabled && (selection?.kind === 'arm' || selection?.kind === 'arm-node') && svgRef.current && (() => {
         const svg = svgRef.current;
         const arm = (draftConfig || committedConfig).arms.find(a => a.id === selection.armId);
         if (!arm || arm.nodes.length === 0) return null;
@@ -744,42 +744,52 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         const bounds = { left: rect.left, top: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height };
 
         return (
-          <>
-            <FloatingButton
-              key={`${selection.armId}-swap`}
-              storageKey="swap_direction"
-              anchorPoint={anchorPoint}
-              defaultOffset={{ x: 24, y: -48 }}
-              bounds={bounds}
-              label="Swap Direction"
-              tooltip="Reverse the road's lane travel directions."
-              shortcut={{ key: 'S' }}
-              icon={<ArrowLeftRight size={14} />}
-              onClick={() => {
-                const next = swapArmDirection(committedConfig, selection.armId);
-                setCommittedConfig(next);
-              }}
-            />
-            <FloatingButton
-              key={`${selection.armId}-delete`}
-              storageKey="delete_road"
-              anchorPoint={anchorPoint}
-              defaultOffset={{ x: 24, y: -4 }}
-              bounds={bounds}
-              label="Delete Road"
-              tooltip="Delete this road."
-              shortcut={DELETE_SHORTCUT}
-              icon={<Trash2 size={14} />}
-              onClick={() => {
-                if (!window.confirm(`Delete road ${selection.armId}?`)) return;
-                const next = structuredClone(committedConfig);
-                next.arms = next.arms.filter(candidate => candidate.id !== selection.armId);
-                next.bypasses = (next.bypasses ?? []).filter(bypass => bypass.fromArmId !== selection.armId && bypass.toArmId !== selection.armId);
-                setCommittedConfig(next);
-                setSelection(null);
-              }}
-            />
-          </>
+          <FloatingButton
+            key={`${selection.armId}-delete`}
+            storageKey="delete_road"
+            anchorPoint={anchorPoint}
+            defaultOffset={{ x: 24, y: -24 }}
+            bounds={bounds}
+            label="Delete Road"
+            tooltip="Delete this road."
+            shortcut={DELETE_SHORTCUT}
+            icon={<Trash2 size={14} />}
+            onClick={() => {
+              if (!window.confirm(`Delete road ${selection.armId}?`)) return;
+              const next = structuredClone(committedConfig);
+              next.arms = next.arms.filter(candidate => candidate.id !== selection.armId);
+              next.bypasses = (next.bypasses ?? []).filter(bypass => bypass.fromArmId !== selection.armId && bypass.toArmId !== selection.armId);
+              setCommittedConfig(next);
+              setSelection(null);
+            }}
+          />
+        );
+      })()}
+      {effectsEnabled && selection?.kind === 'arm-node' && svgRef.current && (() => {
+        const svg = svgRef.current;
+        const arm = committedConfig.arms.find(a => a.id === selection.armId);
+        const node = arm?.nodes.find(n => n.id === selection.nodeId);
+        if (!arm || !node) return null;
+        const canDelete = arm.nodes.length > 2;
+        const rect = (containerRef.current ?? svg).getBoundingClientRect();
+        const bounds = { left: rect.left, top: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height };
+        return (
+          <FloatingButton
+            key={`${selection.armId}-${selection.nodeId}-delete`}
+            storageKey="delete_node"
+            anchorPoint={worldToScreen(node.point, svg)}
+            defaultOffset={{ x: 24, y: -24 }}
+            bounds={bounds}
+            label="Delete Node"
+            tooltip={canDelete ? 'Delete this road node.' : 'Roads need at least two nodes.'}
+            shortcut={DELETE_SHORTCUT}
+            icon={<Trash2 size={14} />}
+            disabled={!canDelete}
+            onClick={() => {
+              setCommittedConfig(removeArmNode(committedConfig, selection.armId, selection.nodeId));
+              setSelection({ kind: 'arm', armId: selection.armId });
+            }}
+          />
         );
       })()}
       {effectsEnabled && selection?.kind === 'lane' && svgRef.current && (() => {

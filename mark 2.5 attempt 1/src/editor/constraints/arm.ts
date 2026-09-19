@@ -32,6 +32,9 @@ export function dragArmNode(armId: string, nodeId: string, delta: Vec2, original
     node.tangentIn = rotateTangent(node.tangentIn, sub(prev.point, oldPoint), sub(prev.point, node.point));
     // Previous node's tangentOut points toward this node
     prev.tangentOut = rotateTangent(prev.tangentOut, sub(oldPoint, prev.point), sub(node.point, prev.point));
+    if (prev.tangentIn && prev.tangentOut && len(prev.tangentOut) > 1e-9) {
+      prev.tangentIn = scale(norm(prev.tangentOut), -len(prev.tangentIn));
+    }
   }
   if (index < arm.nodes.length - 1) {
     const nextNode = arm.nodes[index + 1];
@@ -39,6 +42,24 @@ export function dragArmNode(armId: string, nodeId: string, delta: Vec2, original
     node.tangentOut = rotateTangent(node.tangentOut, sub(nextNode.point, oldPoint), sub(nextNode.point, node.point));
     // Next node's tangentIn points toward this node
     nextNode.tangentIn = rotateTangent(nextNode.tangentIn, sub(oldPoint, nextNode.point), sub(node.point, nextNode.point));
+    if (nextNode.tangentIn && nextNode.tangentOut && len(nextNode.tangentIn) > 1e-9) {
+      nextNode.tangentOut = scale(norm(nextNode.tangentIn), -len(nextNode.tangentOut));
+    }
+  }
+
+  // Keep the dragged node's two handles collinear (a straight-through
+  // tangent). Rotating tangentIn and tangentOut independently from the
+  // prev/next directions can leave them pointing in different directions;
+  // average the two forward directions and align both handles to it.
+  if (node.tangentIn && node.tangentOut) {
+    const inLen = len(node.tangentIn);
+    const outLen = len(node.tangentOut);
+    if (inLen > 1e-9 && outLen > 1e-9) {
+      const forwardSum = add(norm(node.tangentOut), scale(norm(node.tangentIn), -1));
+      const forward = len(forwardSum) > 1e-9 ? norm(forwardSum) : norm(node.tangentOut);
+      node.tangentOut = scale(forward, outLen);
+      node.tangentIn = scale(forward, -inLen);
+    }
   }
 
   return next;
@@ -102,9 +123,23 @@ export function removeArmNode(original: RoundaboutConfig, armId: string, nodeId:
   if (!arm || arm.nodes.length <= 2) return next;
   const index = arm.nodes.findIndex(node => node.id === nodeId);
   if (index < 0) return next;
+  const restore = arm.nodes[index].splitRestore;
   arm.nodes.splice(index, 1);
-  if (arm.nodes[index - 1]) delete arm.nodes[index - 1].tangentOut;
-  if (arm.nodes[index]) delete arm.nodes[index].tangentIn;
+  const previous = arm.nodes[index - 1];
+  const following = arm.nodes[index];
+  if (restore && previous?.id === restore.previous.nodeId && following?.id === restore.next.nodeId) {
+    if (restore.previous.tangentIn) previous.tangentIn = restore.previous.tangentIn;
+    else delete previous.tangentIn;
+    if (restore.previous.tangentOut) previous.tangentOut = restore.previous.tangentOut;
+    else delete previous.tangentOut;
+    if (restore.next.tangentIn) following.tangentIn = restore.next.tangentIn;
+    else delete following.tangentIn;
+    if (restore.next.tangentOut) following.tangentOut = restore.next.tangentOut;
+    else delete following.tangentOut;
+  } else {
+    if (previous) delete previous.tangentOut;
+    if (following) delete following.tangentIn;
+  }
   return next;
 }
 
@@ -121,12 +156,21 @@ export function insertArmNode(original: RoundaboutConfig, armId: string, segment
   const point = lerp(r0, r1, t);
   const start = arm.nodes[segmentIndex];
   const end = arm.nodes[segmentIndex + 1];
+  const splitRestore: NonNullable<ArmNode['splitRestore']> = {
+    previous: { nodeId: start.id },
+    next: { nodeId: end.id }
+  };
+  if (start.tangentIn) splitRestore.previous.tangentIn = { ...start.tangentIn };
+  if (start.tangentOut) splitRestore.previous.tangentOut = { ...start.tangentOut };
+  if (end.tangentIn) splitRestore.next.tangentIn = { ...end.tangentIn };
+  if (end.tangentOut) splitRestore.next.tangentOut = { ...end.tangentOut };
   const interpolateWidths = (a: number[], b: number[]) => a.map((value, index) => value + ((b[index] ?? value) - value) * t);
   const node: ArmNode = {
     id: nodeId,
     point,
     tangentIn: sub(r0, point),
     tangentOut: sub(r1, point),
+    splitRestore,
     medianWidth: start.medianWidth + (end.medianWidth - start.medianWidth) * t,
     laneWidthsIn: interpolateWidths(start.laneWidthsIn, end.laneWidthsIn),
     laneWidthsOut: interpolateWidths(start.laneWidthsOut, end.laneWidthsOut)

@@ -3,6 +3,7 @@ import { type Vec2, add, len, sub } from '../math/vector';
 import { screenToWorld } from '../viewport/transform';
 import { useEditorStore } from '../editor/editorStore';
 import { type RoundaboutConfig } from '../config/types';
+import { dataKeys, dragModifiers, type DragModifiers, type KeyHint } from '../ui/keyHints';
 
 type Props = {
   x: number;
@@ -15,10 +16,11 @@ type Props = {
   shape?: 'circle' | 'square';
   tooltip?: string;
   errorTooltip?: string;
+  keyHints?: KeyHint[];
   dragType?: string;
   followPointer?: boolean;
   springDrag?: boolean;
-  resolveDragPosition?: (rawPosition: Vec2, originalConfig: RoundaboutConfig) => Vec2;
+  resolveDragPosition?: (rawPosition: Vec2, originalConfig: RoundaboutConfig, modifiers: DragModifiers) => Vec2;
   onDragStart?: () => void;
   onDrag: (deltaWorld: Vec2, originalConfig: RoundaboutConfig) => RoundaboutConfig;
   onDragEnd?: (deltaWorld: Vec2, originalConfig: RoundaboutConfig, clientPoint: Vec2) => RoundaboutConfig | null;
@@ -26,7 +28,7 @@ type Props = {
   onClick?: (originalConfig: RoundaboutConfig) => RoundaboutConfig;
 };
 
-export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 6, fill = '#fff', stroke = '#000', shape = 'circle', tooltip, errorTooltip, dragType = 'handle', followPointer = false, springDrag = false, resolveDragPosition, onDragStart, onDrag, onDragEnd, onDragCancel, onClick }) => {
+export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 6, fill = '#fff', stroke = '#000', shape = 'circle', tooltip, errorTooltip, keyHints, dragType = 'handle', followPointer = false, springDrag = false, resolveDragPosition, onDragStart, onDrag, onDragEnd, onDragCancel, onClick }) => {
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const commitDraft = useEditorStore(state => state.commitDraft);
   const committedConfig = useEditorStore(state => state.committedConfig);
@@ -67,7 +69,7 @@ export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 
     latestDelta.current = delta;
     if (followPointer) {
       const rawPosition = add({ x, y }, delta);
-      const resolvedPosition = resolveDragPosition?.(rawPosition, startConfig.current) ?? rawPosition;
+      const resolvedPosition = resolveDragPosition?.(rawPosition, startConfig.current, dragModifiers(e)) ?? rawPosition;
       setDragOffset(sub(resolvedPosition, { x, y }));
     }
     if (len(delta) > 2 * zoom) moved.current = true;
@@ -139,6 +141,7 @@ export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 
     'data-handle': 'true' as const,
     'data-tooltip': tooltip,
     'data-tooltip-error': errorTooltip,
+    'data-keys': keyHints?.length ? dataKeys(...keyHints) : undefined,
   };
   if (shape === 'square') {
     return (

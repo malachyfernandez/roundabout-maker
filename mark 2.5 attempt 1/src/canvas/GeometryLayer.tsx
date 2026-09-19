@@ -141,7 +141,7 @@ export const GeometryLayer: React.FC<Props> = React.memo(({ config, segments, ef
         && selection.armId === seg.source.armId
         && selection.dir === seg.source.dir
         && selection.laneIndex === seg.source.laneIndex;
-      isRoadSelected = (selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'profile-point') && selection.armId === seg.source.armId;
+      isRoadSelected = (selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'arm-node' || selection?.kind === 'profile-point') && selection.armId === seg.source.armId;
       isHovered = hovered?.kind === 'lane'
         && hovered.armId === seg.source.armId
         && hovered.dir === seg.source.dir

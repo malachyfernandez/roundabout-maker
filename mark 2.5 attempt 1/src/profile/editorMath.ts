@@ -19,24 +19,39 @@ export function profileSideOuter(point: ProfileSection, dir: ProfileDirection) {
   );
 }
 
+export function profileSideInner(point: ProfileSection, dir: ProfileDirection) {
+  let inner = point.medianWidth / 2;
+  for (let laneIndex = 0; laneIndex < lanesFor(point, dir).length; laneIndex++) {
+    const lane = lanesFor(point, dir)[laneIndex];
+    if (isProfileLanePresent(lane)) inner = Math.max(inner, laneBounds(point, dir, laneIndex).inner);
+  }
+  return inner;
+}
+
 export function profileTransitionTargets(profile: RoadProfilePoint[], dir: ProfileDirection, laneIndex: number, boundaryIndex: number) {
   const boundaries = profileLaneTransitions(profile, dir)
     .filter(transition => transition.laneIndex === laneIndex)
     .map(transition => transition.boundaryIndex)
     .sort((a, b) => a - b);
   const transitionIndex = boundaries.indexOf(boundaryIndex);
-  const first = (boundaries[transitionIndex - 1] ?? -1) + 1;
-  const last = (boundaries[transitionIndex + 1] ?? profile.length - 1) - 1;
+  // The outermost transition may be dragged onto its cap-end (-1 / length - 1)
+  // so a lane can be extended to reach the end of the road.
+  const first = transitionIndex === 0 ? -1 : boundaries[transitionIndex - 1] + 1;
+  const last = transitionIndex === boundaries.length - 1 ? profile.length - 1 : boundaries[transitionIndex + 1] - 1;
   return Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index).filter(candidate => candidate !== boundaryIndex);
 }
 
 export function profileTransitionSection(profile: RoadProfilePoint[], dir: ProfileDirection, laneIndex: number, boundaryIndex: number, sourceBoundary?: number) {
-  const distance = (profile[boundaryIndex].distance + profile[boundaryIndex + 1].distance) / 2;
+  const distance = boundaryIndex < 0
+    ? profile[0].distance
+    : boundaryIndex >= profile.length - 1
+      ? profile[profile.length - 1].distance
+      : (profile[boundaryIndex].distance + profile[boundaryIndex + 1].distance) / 2;
   const section = interpolateProfile(profile, distance);
   if (sourceBoundary !== undefined && boundaryIndex !== sourceBoundary) {
     const sourceTransition = profileLaneTransitions(profile, dir).find(transition => transition.laneIndex === laneIndex && transition.boundaryIndex === sourceBoundary);
-    const templatePoint = sourceTransition?.fromPresent ? profile[sourceBoundary] : profile[sourceBoundary + 1];
-    const template = templatePoint && lanesFor(templatePoint, dir)[laneIndex];
+    const templateIndex = sourceTransition?.fromPresent ? sourceBoundary : sourceBoundary + 1;
+    const template = lanesFor(profile[Math.max(0, Math.min(profile.length - 1, templateIndex))], dir)[laneIndex];
     if (template) lanesFor(section, dir)[laneIndex] = { width: template.width / 2, gap: template.gap / 2 };
   }
   return section;

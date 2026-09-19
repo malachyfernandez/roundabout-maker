@@ -14,7 +14,7 @@ function pillSize(label: string) {
   return { width, height };
 }
 
-export const ProfileTransitionMarker: React.FC<{ added: boolean; tooltip: string; scale?: number; color?: string; dragging?: boolean; snapped?: boolean }> = ({ added, tooltip, scale = 1, color = '#9747FF', dragging = false, snapped = false }) => {
+export const ProfileTransitionMarker: React.FC<{ added: boolean; tooltip: string; keyHints?: string; scale?: number; color?: string; dragging?: boolean; snapped?: boolean }> = ({ added, tooltip, keyHints, scale = 1, color = '#9747FF', dragging = false, snapped = false }) => {
   const label = added ? 'START' : 'END';
   const { width, height } = pillSize(label);
   const w = width * scale;
@@ -30,7 +30,7 @@ export const ProfileTransitionMarker: React.FC<{ added: boolean; tooltip: string
 
   return (
     <>
-      <rect x={-Math.max(targetW, w) / 2} y={-(HIT_HEIGHT * scale) / 2} width={Math.max(targetW, w)} height={HIT_HEIGHT * scale} fill="transparent" data-handle="true" data-tooltip={tooltip} />
+      <rect x={-Math.max(targetW, w) / 2} y={-(HIT_HEIGHT * scale) / 2} width={Math.max(targetW, w)} height={HIT_HEIGHT * scale} fill="transparent" data-handle="true" data-tooltip={tooltip} data-keys={keyHints} />
       <rect
         x={-targetW / 2}
         y={-targetH / 2}

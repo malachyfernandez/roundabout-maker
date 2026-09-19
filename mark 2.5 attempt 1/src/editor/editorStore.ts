@@ -27,7 +27,7 @@ export type Settings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  performancePreset: 'balanced',
+  performancePreset: 'live',
   zoomSensitivity: 0.83,
   panSensitivity: 1.0,
   smartZoom: true,
@@ -121,6 +121,7 @@ const sameTarget = (a: SelectionTarget | null, b: SelectionTarget | null) => {
   if (a.kind === 'island' || b.kind === 'island') return true;
   if (a.kind === 'ring' && b.kind === 'ring') return a.ringId === b.ringId;
   if (a.kind === 'arm' && b.kind === 'arm') return a.armId === b.armId;
+  if (a.kind === 'arm-node' && b.kind === 'arm-node') return a.armId === b.armId && a.nodeId === b.nodeId;
   if (a.kind === 'profile-point' && b.kind === 'profile-point') return a.armId === b.armId && a.pointId === b.pointId;
   return a.kind === 'lane' && b.kind === 'lane' && a.armId === b.armId && a.dir === b.dir && a.laneIndex === b.laneIndex;
 };

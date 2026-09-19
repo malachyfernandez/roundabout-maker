@@ -2,7 +2,7 @@ import { type ArmConfig, type RingConfig, type RoundaboutConfig } from './config
 import { solveFillet, solveLineLineFillets, type FilletSolution, type LineLineFilletSolution } from '../geometry/fillet';
 import { type Line, normalizeAngle } from '../geometry/primitives';
 import { add, fromAngle, scale, sub, normalize, dot, len, type Vec2 } from '../math/vector';
-import { createRightTurnBypass } from './bypass';
+import { BYPASS_CONNECTOR_MAX_SCORE, createRightTurnBypass, resolveBypassLanePoint } from './bypass';
 import { offsetSplineSamples, sampleSpline } from '../math/spline';
 import { laneOffsetAt, ringOuterEdgePathIndex, sampleProfile } from './profile';
 
@@ -420,7 +420,19 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       const lanePoint = bypass.lanePoint ?? generated.lanePoint;
       const laneAngle = bypass.laneAngle ?? generated.laneAngle;
       const laneDirection = fromAngle(laneAngle);
-      const bypassLine: Line = { kind: 'line', p: lanePoint, u: laneDirection, t0: -1000, t1: 1000 };
+      // Live Floor: the stored lanePoint is the user's requested value. The
+      // resolved point lifts it along its ring radial whenever surrounding
+      // pavement crowds it out OR the connectors can't attach there (a solve
+      // whose tangent points fall off the lane paths renders "connected to
+      // nothing"). It releases back to the requested value when the
+      // obstruction moves away. See docs/LIVE-FLOOR.md.
+      const viable = (point: Vec2) => {
+        const candidateLine: Line = { kind: 'line', p: point, u: laneDirection, t0: -1000, t1: 1000 };
+        const attempt = solveBestBypassPair(from.points, to.points, candidateLine, entryRadius, exitRadius);
+        return attempt !== null && attempt.score <= BYPASS_CONNECTOR_MAX_SCORE;
+      };
+      const resolvedLanePoint = resolveBypassLanePoint(config, lanePoint, { lanePaths: lanePaths.values(), viable });
+      const bypassLine: Line = { kind: 'line', p: resolvedLanePoint, u: laneDirection, t0: -1000, t1: 1000 };
       const resolved = solveBestBypassPair(from.points, to.points, bypassLine, entryRadius, exitRadius);
       if (!resolved) continue;
       const entryLanePoint = resolved.entry.solution.tangentPointFrom;
