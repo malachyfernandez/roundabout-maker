@@ -1,9 +1,10 @@
 import React, { useRef, useState } from 'react';
 import { type ArmConfig, type RoundaboutConfig } from '../config/types';
-import { dragArmNode, insertArmNode } from '../editor/constraints';
+import { dragArmNodes, insertArmNode } from '../editor/constraints';
 import { useEditorStore } from '../editor/editorStore';
+import { focusedArmIds } from '../editor/selection';
 import { getRoadProfile } from '../core/profile';
-import { evaluateSpline, pointsToSvgPath, splineToSvgPath, type CatmullRomSpline } from '../math/spline';
+import { evaluateSpline, getBezierSegment, pointsToSvgPath, splineToSvgPath, type CatmullRomSpline } from '../math/spline';
 import { type Vec2, dot, len, sub } from '../math/vector';
 import { atProfileDistance, profileGeometry } from '../profile/worldGeometry';
 import { screenToWorld } from '../viewport/transform';
@@ -43,19 +44,21 @@ function projectOntoSpline(spline: CatmullRomSpline, point: Vec2) {
 
 const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, relatedSelected, anySelection, passedThrough, hovered, guideLightness, guideShadowStrength }) => {
   const committedConfig = useEditorStore(state => state.committedConfig);
+  const setCommittedConfig = useEditorStore(state => state.setCommittedConfig);
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const commitDraft = useEditorStore(state => state.commitDraft);
   const setDrag = useEditorStore(state => state.setDrag);
   const setSelection = useEditorStore(state => state.setSelection);
   const startPoint = useRef<Vec2 | null>(null);
-  const insertedConfig = useRef<RoundaboutConfig | null>(null);
-  const insertedNodeId = useRef<string | null>(null);
+  const dragOriginal = useRef<RoundaboutConfig | null>(null);
+  const dragNodeIds = useRef<string[]>([]);
   const spline = makeSpline(arm);
   const d = splineToSvgPath(spline);
 
   // Ghost node preview — rAF-coalesced so high-frequency pointermove doesn't
   // trigger a React render per event.
   const [ghostPoint, setGhostPoint] = useState<Vec2 | null>(null);
+  const [hoveredSegmentIndex, setHoveredSegmentIndex] = useState<number | null>(null);
   const pendingGhost = useRef<Vec2 | null>(null);
   const ghostFrame = useRef<number | null>(null);
   const flushGhost = () => {
@@ -68,66 +71,85 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
   };
   React.useEffect(() => () => { if (ghostFrame.current !== null) cancelAnimationFrame(ghostFrame.current); }, []);
 
+  const segmentAt = (point: Vec2) => {
+    const globalT = projectOntoSpline(spline, point);
+    const segmentCount = arm.nodes.length - 1;
+    const scaledT = globalT * segmentCount;
+    const segmentIndex = Math.min(Math.floor(scaledT), segmentCount - 1);
+    return { globalT, segmentIndex, localT: Math.max(0.001, Math.min(0.999, scaledT - segmentIndex)) };
+  };
+
   const handlePointerDown = (event: React.PointerEvent<SVGPathElement>) => {
     if (!selected || passedThrough || arm.nodes.length < 2) return;
+    event.preventDefault();
     event.stopPropagation();
     scheduleGhost(null);
     const svg = event.currentTarget.closest('svg');
     if (!svg) return;
     const pointer = screenToWorld(event, svg);
-    const globalT = projectOntoSpline(spline, pointer);
-    const segmentCount = arm.nodes.length - 1;
-    const scaledT = globalT * segmentCount;
-    const segmentIndex = Math.min(Math.floor(scaledT), segmentCount - 1);
-    const localT = Math.max(0.001, Math.min(0.999, scaledT - segmentIndex));
-    const nodeId = `node_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-    const next = insertArmNode(committedConfig, arm.id, segmentIndex, localT, nodeId);
+    const { segmentIndex } = segmentAt(pointer);
+    setHoveredSegmentIndex(segmentIndex);
     startPoint.current = pointer;
-    insertedConfig.current = next;
-    insertedNodeId.current = nodeId;
-    setDraftConfig(next);
-    setSelection({ kind: 'arm-node', armId: arm.id, nodeId });
-    setDrag({ active: true, type: 'insert-node' });
+    dragOriginal.current = structuredClone(committedConfig);
+    dragNodeIds.current = [arm.nodes[segmentIndex].id, arm.nodes[segmentIndex + 1].id];
+    setDrag({ active: true, type: 'arm-segment' });
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: React.PointerEvent<SVGPathElement>) => {
-    if (startPoint.current && insertedConfig.current && insertedNodeId.current) {
+    if (startPoint.current && dragOriginal.current && dragNodeIds.current.length === 2) {
       const svg = event.currentTarget.closest('svg');
       if (!svg) return;
       const pointer = screenToWorld(event, svg);
-      setDraftConfig(dragArmNode(arm.id, insertedNodeId.current, sub(pointer, startPoint.current), insertedConfig.current));
+      const targets = dragNodeIds.current.map(nodeId => ({ kind: 'arm-node' as const, armId: arm.id, nodeId }));
+      setDraftConfig(dragArmNodes(dragOriginal.current, targets, sub(pointer, startPoint.current), !(event.metaKey || event.ctrlKey)));
       return;
     }
-    // Not dragging — update ghost node preview.
     if (!selected || passedThrough) return;
     const svg = event.currentTarget.closest('svg');
     if (!svg) return;
     const pointer = screenToWorld(event, svg);
-    const globalT = projectOntoSpline(spline, pointer);
-    const { p } = evaluateSpline(spline, globalT);
+    const projected = segmentAt(pointer);
+    const { p } = evaluateSpline(spline, projected.globalT);
+    setHoveredSegmentIndex(projected.segmentIndex);
     scheduleGhost(p);
+  };
+
+  const handleDoubleClick = (event: React.MouseEvent<SVGPathElement>) => {
+    if (!selected || passedThrough || arm.nodes.length < 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const svg = event.currentTarget.closest('svg');
+    if (!svg) return;
+    const { segmentIndex, localT } = segmentAt(screenToWorld(event, svg));
+    const nodeId = `node_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    setCommittedConfig(insertArmNode(committedConfig, arm.id, segmentIndex, localT, nodeId));
+    setSelection({ kind: 'arm-node', armId: arm.id, nodeId });
+    scheduleGhost(null);
   };
 
   const handlePointerLeave = () => {
     scheduleGhost(null);
+    setHoveredSegmentIndex(null);
+  };
+
+  const resetDrag = () => {
+    startPoint.current = null;
+    dragOriginal.current = null;
+    dragNodeIds.current = [];
+    setDrag(null);
   };
 
   const handlePointerUp = (event: React.PointerEvent<SVGPathElement>) => {
-    if (!insertedNodeId.current) return;
+    if (!startPoint.current) return;
     commitDraft();
-    startPoint.current = null;
-    insertedConfig.current = null;
-    insertedNodeId.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
+    resetDrag();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
   const handlePointerCancel = (event: React.PointerEvent<SVGPathElement>) => {
     setDraftConfig(null);
-    setDrag(null);
-    startPoint.current = null;
-    insertedConfig.current = null;
-    insertedNodeId.current = null;
+    resetDrag();
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
@@ -162,6 +184,10 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
   const activeStroke = selected ? '#2563eb' : '#3b82f6';
   const activeWidth = (selected ? 2 : 1.75) * zoom;
   const shadowFilter = guideShadowStrength > 0 ? `url(#road-guide-shadow)` : undefined;
+  const hoveredSegmentPath = hoveredSegmentIndex !== null && hoveredSegmentIndex < arm.nodes.length - 1 ? (() => {
+    const segment = getBezierSegment(arm.nodes, hoveredSegmentIndex);
+    return `M ${segment.p0.x} ${segment.p0.y} C ${segment.c1.x} ${segment.c1.y} ${segment.c2.x} ${segment.c2.y} ${segment.p1.x} ${segment.p1.y}`;
+  })() : null;
 
   return (
     <g>
@@ -204,18 +230,20 @@ const ArmCenterline: React.FC<CenterlineProps> = ({ arm, zoom, selected, related
           )}
         </>
       )}
+      {selected && hoveredSegmentPath && <path d={hoveredSegmentPath} fill="none" stroke="#2563eb" strokeWidth={6 * zoom} strokeLinecap="round" opacity={0.3} pointerEvents="none" />}
       <path
         d={selected && !passedThrough ? d : middlePath ?? d}
         fill="none"
         stroke="transparent"
-        strokeWidth={10}
+        strokeWidth={20}
         vectorEffect="non-scaling-stroke"
         pointerEvents="stroke"
-        cursor={selected ? 'copy' : 'pointer'}
+        cursor={selected ? 'grab' : 'pointer'}
         data-target={selected && !passedThrough ? undefined : JSON.stringify({ kind: 'arm', armId: arm.id })}
         data-handle={selected && !passedThrough ? 'true' : undefined}
-        data-tooltip={selected ? 'Click to add a road point, or drag immediately to place it.' : `Select road ${arm.id}.`}
+        data-tooltip={selected ? 'Drag this road segment to move both endpoint nodes. Double-click to add a road node.' : `Select road ${arm.id}.`}
         onPointerDown={handlePointerDown}
+        onDoubleClick={handleDoubleClick}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
@@ -243,6 +271,7 @@ type Props = {
 };
 
 export const CenterlineLayer: React.FC<Props> = React.memo(({ config, zoom }) => {
+  const selections = useEditorStore(state => state.selections);
   const selection = useEditorStore(state => state.selection);
   const hovered = useEditorStore(state => state.hovered);
   const viewMode = useEditorStore(state => state.viewMode);
@@ -252,7 +281,16 @@ export const CenterlineLayer: React.FC<Props> = React.memo(({ config, zoom }) =>
   const guideShadowBlur = useEditorStore(state => state.settings.roadGuideShadowBlur);
   const guideShadowOffsetY = useEditorStore(state => state.settings.roadGuideShadowOffsetY);
   if (viewMode === 'rendered') return null;
-  const anySelection = selection !== null;
+  const anySelection = selections.length > 0;
+  const focused = focusedArmIds(selections);
+  const focusActive = focused.size > 0;
+  // Focused roads' guides render above the dimmed rest, with the primary
+  // selection's road on top — matching GeometryLayer's segment ordering.
+  const primaryArmId = selection && 'armId' in selection ? selection.armId : null;
+  const armRank = (armId: string) => focusActive && focused.has(armId)
+    ? armId === primaryArmId ? 2 : 1
+    : 0;
+  const orderedArms = [...config.arms].sort((a, b) => armRank(a.id) - armRank(b.id));
   const guidePoints = config.arms.flatMap(arm => arm.nodes.flatMap(node => [
     node.point,
     node.tangentIn ? { x: node.point.x + node.tangentIn.x, y: node.point.y + node.tangentIn.y } : node.point,
@@ -272,20 +310,29 @@ export const CenterlineLayer: React.FC<Props> = React.memo(({ config, zoom }) =>
           <feDropShadow dx={0} dy={guideShadowOffsetY * zoom} stdDeviation={guideShadowBlur * zoom * guideShadowStrength} floodColor="#000" floodOpacity={guideShadowStrength} />
         </filter>
       </defs>
-      {config.arms.map(arm => (
-        <ArmCenterline
-          key={arm.id}
-          arm={arm}
-          zoom={zoom}
-          selected={selection?.kind === 'arm' && selection.armId === arm.id}
-          relatedSelected={(selection?.kind === 'lane' || selection?.kind === 'profile-point' || selection?.kind === 'arm-node') && selection.armId === arm.id}
-          anySelection={anySelection}
-          passedThrough={passThroughStack.includes(JSON.stringify({ kind: 'arm', armId: arm.id }))}
-          hovered={hovered?.kind === 'arm' && hovered.armId === arm.id}
-          guideLightness={guideLightness}
-          guideShadowStrength={guideShadowStrength}
-        />
-      ))}
+      {orderedArms.map(arm => {
+        const armSelected = selections.some(selected => selected.kind === 'arm' && selected.armId === arm.id);
+        const armRelatedSelected = selections.some(selected => selected.kind !== 'arm' && 'armId' in selected && selected.armId === arm.id);
+        // Before a road is in the selection scope, a click on any of its parts
+        // selects the whole road — so hovering any part previews road hover.
+        const armHovered = Boolean(hovered && 'armId' in hovered && hovered.armId === arm.id
+          && (hovered.kind === 'arm' || (!armSelected && !armRelatedSelected)));
+        return (
+          <g key={arm.id} style={{ opacity: focusActive && !focused.has(arm.id) ? 0.5 : 1, transition: 'opacity 160ms ease' }}>
+            <ArmCenterline
+              arm={arm}
+              zoom={zoom}
+              selected={armSelected}
+              relatedSelected={armRelatedSelected}
+              anySelection={anySelection}
+              passedThrough={passThroughStack.includes(JSON.stringify({ kind: 'arm', armId: arm.id }))}
+              hovered={armHovered}
+              guideLightness={guideLightness}
+              guideShadowStrength={guideShadowStrength}
+            />
+          </g>
+        );
+      })}
     </g>
   );
 });

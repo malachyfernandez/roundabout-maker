@@ -1,9 +1,8 @@
-import React, { useRef, useState } from 'react';
-import { type Vec2, add, len, sub } from '../math/vector';
-import { screenToWorld } from '../viewport/transform';
-import { useEditorStore } from '../editor/editorStore';
-import { type RoundaboutConfig } from '../config/types';
-import { dataKeys, dragModifiers, type DragModifiers, type KeyHint } from '../ui/keyHints';
+import React from 'react';
+import { type Vec2 } from '../math/vector';
+import { type RoundaboutConfig, type SelectionTarget } from '../config/types';
+import { dataKeys, type DragModifiers, type KeyHint } from '../ui/keyHints';
+import { useHandleDrag } from './useHandleDrag';
 
 type Props = {
   x: number;
@@ -14,153 +13,81 @@ type Props = {
   fill?: string;
   stroke?: string;
   shape?: 'circle' | 'square';
+  icon?: React.ReactNode;
   tooltip?: string;
   errorTooltip?: string;
   keyHints?: KeyHint[];
   dragType?: string;
+  dragTarget?: SelectionTarget;
+  duplicateOwner?: boolean;
   followPointer?: boolean;
   springDrag?: boolean;
   resolveDragPosition?: (rawPosition: Vec2, originalConfig: RoundaboutConfig, modifiers: DragModifiers) => Vec2;
-  onDragStart?: () => void;
-  onDrag: (deltaWorld: Vec2, originalConfig: RoundaboutConfig) => RoundaboutConfig;
-  onDragEnd?: (deltaWorld: Vec2, originalConfig: RoundaboutConfig, clientPoint: Vec2) => RoundaboutConfig | null;
+  onDragStart?: (modifiers: DragModifiers, originalConfig: RoundaboutConfig, startPoint: Vec2) => void;
+  onDrag: (deltaWorld: Vec2, originalConfig: RoundaboutConfig, modifiers: DragModifiers, dragTarget?: SelectionTarget) => RoundaboutConfig;
+  onDragEnd?: (deltaWorld: Vec2, originalConfig: RoundaboutConfig, clientPoint: Vec2, modifiers: DragModifiers, dragTarget?: SelectionTarget) => RoundaboutConfig | null;
   onDragCancel?: () => void;
   onClick?: (originalConfig: RoundaboutConfig) => RoundaboutConfig;
 };
 
-export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 6, fill = '#fff', stroke = '#000', shape = 'circle', tooltip, errorTooltip, keyHints, dragType = 'handle', followPointer = false, springDrag = false, resolveDragPosition, onDragStart, onDrag, onDragEnd, onDragCancel, onClick }) => {
-  const setDraftConfig = useEditorStore(state => state.setDraftConfig);
-  const commitDraft = useEditorStore(state => state.commitDraft);
-  const committedConfig = useEditorStore(state => state.committedConfig);
-  const setCommittedConfig = useEditorStore(state => state.setCommittedConfig);
-  const setDrag = useEditorStore(state => state.setDrag);
-
-  const startPt = useRef<Vec2 | null>(null);
-  const startConfig = useRef<RoundaboutConfig | null>(null);
-  const moved = useRef(false);
-  const latestDelta = useRef<Vec2>({ x: 0, y: 0 });
-  const [dragOffset, setDragOffset] = useState<Vec2>({ x: 0, y: 0 });
-
-  const handlePointerDown = (e: React.PointerEvent) => {
-    e.preventDefault();
-    e.stopPropagation(); // prevent Viewport from capturing
-    e.currentTarget.setPointerCapture(e.pointerId);
-    
-    const svgEl = (e.currentTarget as Element).closest('svg');
-    if (!svgEl) return;
-
-    startPt.current = screenToWorld(e, svgEl);
-    startConfig.current = JSON.parse(JSON.stringify(committedConfig));
-    moved.current = false;
-    latestDelta.current = { x: 0, y: 0 };
-    setDragOffset({ x: 0, y: 0 });
-    onDragStart?.();
-    setDrag({ active: true, type: dragType });
-  };
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!startPt.current || !startConfig.current) return;
-    
-    const svgEl = (e.currentTarget as Element).closest('svg');
-    if (!svgEl) return;
-
-    const currentPt = screenToWorld(e, svgEl);
-    const delta = sub(currentPt, startPt.current);
-    latestDelta.current = delta;
-    if (followPointer) {
-      const rawPosition = add({ x, y }, delta);
-      const resolvedPosition = resolveDragPosition?.(rawPosition, startConfig.current, dragModifiers(e)) ?? rawPosition;
-      setDragOffset(sub(resolvedPosition, { x, y }));
-    }
-    if (len(delta) > 2 * zoom) moved.current = true;
-    
-    const newConfig = onDrag(delta, startConfig.current);
-    setDraftConfig(newConfig);
-  };
-
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (startPt.current && startConfig.current) {
-      if (!moved.current && onClick) {
-        setDraftConfig(null);
-        setCommittedConfig(onClick(startConfig.current));
-        setDrag(null);
-      } else if (moved.current && onDragEnd) {
-        const result = onDragEnd(latestDelta.current, startConfig.current, { x: e.clientX, y: e.clientY });
-        setDraftConfig(null);
-        if (result) setCommittedConfig(result);
-        setDrag(null);
-      } else if (moved.current) {
-        commitDraft();
-      } else {
-        setDraftConfig(null);
-        setDrag(null);
-      }
-      startPt.current = null;
-      startConfig.current = null;
-      latestDelta.current = { x: 0, y: 0 };
-      setDragOffset({ x: 0, y: 0 });
-      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  };
-
-  const handlePointerCancel = (e: React.PointerEvent) => {
-    setDraftConfig(null);
-    setDrag(null);
-    startPt.current = null;
-    startConfig.current = null;
-    latestDelta.current = { x: 0, y: 0 };
-    setDragOffset({ x: 0, y: 0 });
-    onDragCancel?.();
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-  };
-
-  const handleLostPointerCapture = () => {
-    if (!startPt.current) return;
-    setDraftConfig(null);
-    setDrag(null);
-    startPt.current = null;
-    startConfig.current = null;
-    latestDelta.current = { x: 0, y: 0 };
-    setDragOffset({ x: 0, y: 0 });
-    onDragCancel?.();
-  };
+export const Handle: React.FC<Props> = ({ x, y, zoom, cursor = 'grab', radius = 6, fill = '#fff', stroke = '#000', shape = 'circle', icon, tooltip, errorTooltip, keyHints, dragType, dragTarget, duplicateOwner = false, followPointer = false, springDrag = false, resolveDragPosition, onDragStart, onDrag, onDragEnd, onDragCancel, onClick }) => {
+  const { active, dragOffset, handlers } = useHandleDrag({
+    zoom,
+    position: { x, y },
+    dragType,
+    dragTarget,
+    duplicateOwner,
+    followPointer,
+    resolveDragPosition,
+    onDragStart,
+    onDrag,
+    onDragEnd,
+    onDragCancel,
+    onClick,
+  });
 
   const r = radius * zoom;
   const commonProps = {
     fill,
     stroke,
     strokeWidth: 2 * zoom,
-    cursor: startPt.current ? 'grabbing' : cursor,
-    onPointerDown: handlePointerDown,
-    onPointerMove: handlePointerMove,
-    onPointerUp: handlePointerUp,
-    onPointerCancel: handlePointerCancel,
-    onLostPointerCapture: handleLostPointerCapture,
-    transform: followPointer ? `translate(${dragOffset.x} ${dragOffset.y})` : undefined,
-    style: springDrag ? { transition: 'transform 110ms cubic-bezier(0.2, 1.45, 0.4, 1)' } : undefined,
+    cursor: active ? 'grabbing' : cursor,
+    ...handlers,
     'data-handle': 'true' as const,
     'data-tooltip': tooltip,
     'data-tooltip-error': errorTooltip,
     'data-keys': keyHints?.length ? dataKeys(...keyHints) : undefined,
   };
-  if (shape === 'square') {
-    return (
-      <rect
-        x={x - r}
-        y={y - r}
-        width={r * 2}
-        height={r * 2}
-        rx={r * 0.2}
-        {...commonProps}
-      />
-    );
-  }
-  return (
+  const dragFx = {
+    transform: followPointer ? `translate(${dragOffset.x} ${dragOffset.y})` : undefined,
+    style: springDrag ? { transition: 'transform 110ms cubic-bezier(0.2, 1.45, 0.4, 1)' } : undefined,
+  };
+  const shapeEl = shape === 'square' ? (
+    <rect
+      x={x - r}
+      y={y - r}
+      width={r * 2}
+      height={r * 2}
+      rx={r * 0.2}
+      {...commonProps}
+      {...(icon ? {} : dragFx)}
+    />
+  ) : (
     <circle
       cx={x}
       cy={y}
       r={r}
       {...commonProps}
+      {...(icon ? {} : dragFx)}
     />
+  );
+  if (!icon) return shapeEl;
+  return (
+    <g {...dragFx}>
+      {shapeEl}
+      <g transform={`translate(${x} ${y}) scale(${(r * 2) / 24}) translate(-12 -12)`} pointerEvents="none">
+        {icon}
+      </g>
+    </g>
   );
 };

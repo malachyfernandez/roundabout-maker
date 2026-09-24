@@ -1,8 +1,8 @@
-import { type ArmNode, type RoundaboutConfig } from '../../config/types';
+import { type ArmNode, type RoundaboutConfig, type SelectionTarget } from '../../config/types';
 import { type Vec2, add, angleOf, len, lerp, norm, rot, scale, sub } from '../../math/vector';
 import { getBezierSegment } from '../../math/spline';
 
-export function dragArmNode(armId: string, nodeId: string, delta: Vec2, original: RoundaboutConfig): RoundaboutConfig {
+export function dragArmNode(armId: string, nodeId: string, delta: Vec2, original: RoundaboutConfig, snap = true): RoundaboutConfig {
   const next = JSON.parse(JSON.stringify(original)) as RoundaboutConfig;
   const arm = next.arms.find(a => a.id === armId);
   if (!arm) return next;
@@ -11,8 +11,8 @@ export function dragArmNode(armId: string, nodeId: string, delta: Vec2, original
   const node = arm.nodes[index];
   const oldPoint = { x: node.point.x, y: node.point.y };
   node.point = {
-    x: Math.round(node.point.x + delta.x),
-    y: Math.round(node.point.y + delta.y)
+    x: snap ? Math.round(node.point.x + delta.x) : node.point.x + delta.x,
+    y: snap ? Math.round(node.point.y + delta.y) : node.point.y + delta.y
   };
 
   // Rotate explicit tangents to preserve their angle relative to the
@@ -63,6 +63,40 @@ export function dragArmNode(armId: string, nodeId: string, delta: Vec2, original
   }
 
   return next;
+}
+
+export function dragArm(armId: string, delta: Vec2, original: RoundaboutConfig, snap = true): RoundaboutConfig {
+  const next = structuredClone(original);
+  const arm = next.arms.find(candidate => candidate.id === armId);
+  if (arm) for (const node of arm.nodes) node.point = {
+    x: snap ? Math.round(node.point.x + delta.x) : node.point.x + delta.x,
+    y: snap ? Math.round(node.point.y + delta.y) : node.point.y + delta.y
+  };
+  return next;
+}
+
+export function dragArms(armIds: string[], delta: Vec2, original: RoundaboutConfig, snap = true): RoundaboutConfig {
+  return armIds.reduce((next, armId) => dragArm(armId, delta, next, snap), original);
+}
+
+export function rotateArm(armId: string, pivot: Vec2, angle: number, original: RoundaboutConfig): RoundaboutConfig {
+  const next = structuredClone(original);
+  const arm = next.arms.find(candidate => candidate.id === armId);
+  if (!arm) return next;
+  for (const node of arm.nodes) {
+    node.point = add(pivot, rot(sub(node.point, pivot), angle));
+    if (node.tangentIn) node.tangentIn = rot(node.tangentIn, angle);
+    if (node.tangentOut) node.tangentOut = rot(node.tangentOut, angle);
+  }
+  return next;
+}
+
+export function rotateArms(armIds: string[], pivot: Vec2, angle: number, original: RoundaboutConfig): RoundaboutConfig {
+  return armIds.reduce((next, armId) => rotateArm(armId, pivot, angle, next), original);
+}
+
+export function dragArmNodes(original: RoundaboutConfig, targets: Extract<SelectionTarget, { kind: 'arm-node' }>[], delta: Vec2, snap = true): RoundaboutConfig {
+  return targets.reduce((next, target) => dragArmNode(target.armId, target.nodeId, delta, next, snap), original);
 }
 
 function currentHandle(nodes: ArmNode[], index: number, which: 'in' | 'out'): Vec2 {
@@ -120,9 +154,10 @@ export function swapArmDirection(original: RoundaboutConfig, armId: string): Rou
 export function removeArmNode(original: RoundaboutConfig, armId: string, nodeId: string): RoundaboutConfig {
   const next = structuredClone(original);
   const arm = next.arms.find(candidate => candidate.id === armId);
-  if (!arm || arm.nodes.length <= 2) return next;
+  if (!arm) return next;
   const index = arm.nodes.findIndex(node => node.id === nodeId);
-  if (index < 0) return next;
+  // The first and last nodes anchor the road's ends and can't be removed.
+  if (index <= 0 || index >= arm.nodes.length - 1) return next;
   const restore = arm.nodes[index].splitRestore;
   arm.nodes.splice(index, 1);
   const previous = arm.nodes[index - 1];

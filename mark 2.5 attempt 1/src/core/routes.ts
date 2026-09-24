@@ -1,12 +1,20 @@
 import { type ArmConfig, type RingConfig, type RoundaboutConfig } from './config';
 import { solveFillet, solveLineLineFillets, type FilletSolution, type LineLineFilletSolution } from '../geometry/fillet';
 import { type Line, normalizeAngle } from '../geometry/primitives';
-import { add, fromAngle, scale, sub, normalize, dot, len, type Vec2 } from '../math/vector';
+import { add, fromAngle, scale, sub, normalize, dot, len, angleOf, type Vec2 } from '../math/vector';
 import { BYPASS_CONNECTOR_MAX_SCORE, createRightTurnBypass, resolveBypassLanePoint } from './bypass';
 import { offsetSplineSamples, sampleSpline } from '../math/spline';
-import { laneOffsetAt, ringOuterEdgePathIndex, sampleProfile } from './profile';
+import { miterOffsetEdges } from '../math/polyline';
+import { laneOffsetAt, profileSampleFrameAt, ringOuterEdgePathIndex, sampleProfile } from './profile';
 
 export type RoadEndpoint = 'start' | 'end';
+
+// A point on the road's guide spline plus the direction pointing off the end
+// of the road. Lane strips clip their edges to the line through `p` that is
+// perpendicular to `outward`, so every lane ends on the same crosscut.
+export type CapLine = { p: Vec2; outward: Vec2 };
+
+export type LaneBoundaries = { left: Vec2[]; right: Vec2[] };
 
 export type EntryLeg = {
   armId: string;
@@ -16,7 +24,9 @@ export type EntryLeg = {
   line: Line;
   points: {x:number, y:number}[];
   widths: number[];
+  boundaries: LaneBoundaries;
   fillet: FilletSolution;
+  endCap?: CapLine;
 };
 
 export type ExitLeg = {
@@ -27,7 +37,9 @@ export type ExitLeg = {
   line: Line;
   points: {x:number, y:number}[];
   widths: number[];
+  boundaries: LaneBoundaries;
   fillet: FilletSolution;
+  endCap?: CapLine;
 };
 
 export type ThroughRoute = {
@@ -69,6 +81,9 @@ export type ProfileLaneRoute = {
   dir: 'in' | 'out';
   points: { x: number; y: number }[];
   widths: number[];
+  boundaries: LaneBoundaries;
+  startCap?: CapLine;
+  endCap?: CapLine;
 };
 
 export type BypassRoute = {
@@ -77,11 +92,11 @@ export type BypassRoute = {
   bypassId: string;
   entryRadius: number;
   exitRadius: number;
-  entry: { armId: string; laneIdx: number; points: Vec2[]; widths: number[] };
+  entry: { armId: string; laneIdx: number; points: Vec2[]; widths: number[]; boundaries: LaneBoundaries; endCap?: CapLine };
   entryConnector: LineLineFilletSolution;
   lane: { line: Line; width: number };
   exitConnector: LineLineFilletSolution;
-  exit: { armId: string; laneIdx: number; points: Vec2[]; widths: number[] };
+  exit: { armId: string; laneIdx: number; points: Vec2[]; widths: number[]; boundaries: LaneBoundaries; endCap?: CapLine };
 };
 
 export type RouteSymbolic = ThroughRoute | StandaloneEntry | StandaloneExit | FullRingRoute | BypassRoute | ProfileLaneRoute;
@@ -111,13 +126,8 @@ function solveFilletAlongPath(
   // Try the requested fillet radius first, then progressively reduce it.
   // This handles cases where the requested radius is too large for the
   // approach angle (e.g. filletRadius > ringRadius at certain angles).
-  const minFilletRadius = Math.max(2, ringRadius * 0.1);
-  const radiiToTry = [filletRadius];
-  for (let r = filletRadius * 0.75; r >= minFilletRadius; r *= 0.75) {
-    radiiToTry.push(r);
-  }
-
-  for (const tryRadius of radiiToTry) {
+  const minFilletRadius = Math.min(filletRadius, Math.max(2, ringRadius * 0.1));
+  const solveAtRadius = (tryRadius: number) => {
     let best: { line: Line; fillet: FilletSolution; distance: number } | null = null;
     for (let i = 0; i < points.length - 1; i++) {
       const a = points[i];
@@ -144,14 +154,101 @@ function solveFilletAlongPath(
       const distance = len(sub(fillet.tangentPointLine, projected));
       if (!best || distance < best.distance) best = { line, fillet, distance };
     }
-    if (best) return { line: best.line, fillet: best.fillet };
+    return best;
+  };
+
+  const requested = solveAtRadius(filletRadius);
+  if (requested) return { line: requested.line, fillet: requested.fillet };
+
+  const searchSteps = 24;
+  let failedRadius = filletRadius;
+  for (let step = 1; step <= searchSteps; step++) {
+    const radius = filletRadius - (filletRadius - minFilletRadius) * step / searchSteps;
+    const solved = solveAtRadius(radius);
+    if (!solved) {
+      failedRadius = radius;
+      continue;
+    }
+    let lowerRadius = radius;
+    let lowerSolution = solved;
+    let upperRadius = failedRadius;
+    for (let iteration = 0; iteration < 12; iteration++) {
+      const candidateRadius = (lowerRadius + upperRadius) / 2;
+      const candidate = solveAtRadius(candidateRadius);
+      if (candidate) {
+        lowerRadius = candidateRadius;
+        lowerSolution = candidate;
+      } else {
+        upperRadius = candidateRadius;
+      }
+    }
+    return { line: lowerSolution.line, fillet: lowerSolution.fillet };
   }
   return null;
 }
 
-function endpointPath<T>(values: T[], endpoint: RoadEndpoint): T[] {
-  const midpoint = Math.floor((values.length - 1) / 2);
+// Where the lane would meet the ring if it never diverged (fillet radius 0):
+// the first crossing of the lane path with the ring centerline circle,
+// starting from the lane endpoint that attaches to this ring.
+function laneRingCrossingAngle(points: Vec2[], ring: RingConfig): number | null {
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const d = sub(points[i + 1], a);
+    const A = dot(d, d);
+    if (A < 1e-12) continue;
+    const f = sub(a, ring.center);
+    const B = 2 * dot(f, d);
+    const C = dot(f, f) - ring.radius * ring.radius;
+    const disc = B * B - 4 * A * C;
+    if (disc < 0) continue;
+    const sqrtD = Math.sqrt(disc);
+    const t1 = (-B - sqrtD) / (2 * A);
+    const t2 = (-B + sqrtD) / (2 * A);
+    const t = t1 >= -1e-9 && t1 <= 1 + 1e-9 ? t1 : t2 >= -1e-9 && t2 <= 1 + 1e-9 ? t2 : null;
+    if (t === null) continue;
+    const p = add(a, scale(d, Math.max(0, Math.min(1, t))));
+    return angleOf(sub(p, ring.center));
+  }
+  return null;
+}
+
+// Index of the sample nearest the path's arc-length midpoint. Each end of a
+// lane can connect to a different ring, and each endpoint's solver only sees
+// the half of the path nearest it. The spline sampler allocates samples per
+// node-span, so an index midpoint tracks node placement — a node sitting
+// inside the ring would swallow that endpoint's entire half, leaving the
+// fillet solver no points outside the ring to attach to. Splitting by arc
+// length keeps the divider fixed wherever mid-road nodes sit.
+function pathMidpointIndex(points: Vec2[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += len(sub(points[i], points[i - 1]));
+  let walked = 0;
+  for (let i = 1; i < points.length; i++) {
+    walked += len(sub(points[i], points[i - 1]));
+    if (walked >= total / 2) return i;
+  }
+  return Math.max(0, points.length - 1);
+}
+
+function endpointPath<T>(values: T[], endpoint: RoadEndpoint, midpoint: number): T[] {
   return endpoint === 'start' ? values.slice(0, midpoint + 1) : values.slice(midpoint).reverse();
+}
+
+function endpointBoundaries(boundaries: LaneBoundaries, endpoint: RoadEndpoint, midpoint: number): LaneBoundaries {
+  if (endpoint === 'start') {
+    return {
+      left: boundaries.left.slice(0, midpoint + 1),
+      right: boundaries.right.slice(0, midpoint + 1)
+    };
+  }
+  return {
+    left: [...boundaries.right.slice(midpoint)].reverse(),
+    right: [...boundaries.left.slice(midpoint)].reverse()
+  };
+}
+
+function reversedBoundaries(boundaries: LaneBoundaries): LaneBoundaries {
+  return { left: [...boundaries.right].reverse(), right: [...boundaries.left].reverse() };
 }
 
 function lanePath(config: RoundaboutConfig, arm: ArmConfig, dir: 'in' | 'out', laneIndex: number) {
@@ -192,8 +289,9 @@ export function laneIntersectsRingAtEndpoint(config: RoundaboutConfig, armId: st
   const ring = config.rings.find(candidate => candidate.id === ringId);
   if (!arm || !ring || arm.nodes.length < 2) return false;
   const path = lanePath(config, arm, dir, laneIndex);
-  const points = endpointPath(path.points, endpoint);
-  const widths = endpointPath(path.widths, endpoint);
+  const midpoint = pathMidpointIndex(path.points);
+  const points = endpointPath(path.points, endpoint, midpoint);
+  const widths = endpointPath(path.widths, endpoint, midpoint);
   const outerRadius = ring.radius + ring.width / 2;
   return points.some((point, index) => len(sub(point, ring.center)) <= outerRadius + (widths[index] ?? 0) / 2);
 }
@@ -204,7 +302,8 @@ export function solveLaneFillet(config: RoundaboutConfig, armId: string, dir: 'i
   const lane = dir === 'in' ? arm?.lanesIn[laneIndex] : arm?.lanesOut[laneIndex];
   if (!arm || !ring || !lane || arm.nodes.length < 2 || !laneIntersectsRingAtEndpoint(config, armId, dir, laneIndex, ringId, endpoint)) return null;
 
-  const points = endpointPath(lanePath(config, arm, dir, laneIndex).points, endpoint);
+  const lanePoints = lanePath(config, arm, dir, laneIndex).points;
+  const points = endpointPath(lanePoints, endpoint, pathMidpointIndex(lanePoints));
   const isEntry = laneRoleAtEndpoint(dir, endpoint) === 'entry';
   const isRHD = config.circulation === 'ccw';
   const filletRadius = laneFilletRadiusAtEndpoint(arm, dir, laneIndex, endpoint);
@@ -312,7 +411,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
   const sampleCount = options.sampleCount ?? 90;
 
   // 1. Precompute lane centerlines for all arms
-  const lanePaths = new Map<string, { points: {x:number, y:number}[], widths: number[], line: Line }>();
+  const lanePaths = new Map<string, { points: {x:number, y:number}[], widths: number[], boundaries: LaneBoundaries, line: Line, startCap?: CapLine, endCap?: CapLine }>();
 
   for (const arm of config.arms) {
     if (arm.nodes.length < 2) continue;
@@ -325,6 +424,16 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     };
     const profileSample = options.profileEnabled ? sampleProfile(arm, baseSpline, sampleCount) : null;
     const baseSamples = profileSample?.samples ?? sampleSpline(baseSpline, sampleCount);
+    // The road's cap-ends sit on the base spline at the anchor distances; lane
+    // strips clip to these shared lines so a curved road still ends straight.
+    const startCapDistance = profileSample?.profile.find(point => point.endAnchor === 'start')?.distance ?? 0;
+    const endCapDistance = profileSample?.profile.find(point => point.endAnchor === 'end')?.distance ?? profileSample?.totalLength ?? 0;
+    const capFrames = profileSample ? {
+      start: profileSampleFrameAt(profileSample.samples, profileSample.distances, startCapDistance),
+      end: profileSampleFrameAt(profileSample.samples, profileSample.distances, endCapDistance)
+    } : null;
+    const startCap: CapLine | undefined = capFrames ? { p: capFrames.start.p, outward: scale(capFrames.start.tangent, -1) } : undefined;
+    const endCap: CapLine | undefined = capFrames ? { p: capFrames.end.p, outward: capFrames.end.tangent } : undefined;
 
     // Helper to calculate cumulative widths at each node for offsetting
     const getOffsets = (getLaneWidths: (n: any) => number[], getMedian: (n: any) => number, laneIdx: number, isRHD: boolean, isEntry: boolean) => {
@@ -357,6 +466,14 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       });
     };
 
+    // Lane strip edges offset perpendicular to the lane's own centerline,
+    // not the road's normal. Road-normal offsets shear the strip wherever
+    // the lane's lateral offset changes along the road (a lane node dragged
+    // sideways), shrinking its real width to width·cos(θ). The miter join
+    // keeps the inside corner true at the bend instead of biting inward.
+    const laneBoundaries = (center: Vec2[], widths: number[]): LaneBoundaries =>
+      miterOffsetEdges(center, widths.map(width => (width ?? 0) / 2), index => baseSamples[index]?.normal ?? { x: 1, y: 0 });
+
     for (let i = 0; i < arm.lanesIn.length; i++) {
       const offsets = profileSample
         ? profileSample.sections.map(section => laneOffsetAt(section, i, true, isRHD))
@@ -365,6 +482,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       const widths = profileSample
         ? profileSample.sections.map(section => section.lanesIn[i]?.width ?? 0)
         : lanePoints.map(() => arm.nodes[0].laneWidthsIn[i] || 10);
+      const boundaries = laneBoundaries(lanePoints, widths);
 
       // Lane points go from center to out. The entry vector goes from out to center.
       // So tangent at [0] goes from center to out. We negate it for uIn.
@@ -378,7 +496,10 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       lanePaths.set(`${arm.id}_in_${i}`, {
         points: lanePoints,
         widths,
-        line: { kind: 'line', p: pFar, u: uIn, t0: 0, t1: 1000 }
+        boundaries,
+        line: { kind: 'line', p: pFar, u: uIn, t0: 0, t1: 1000 },
+        startCap,
+        endCap
       });
     }
 
@@ -390,6 +511,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       const widths = profileSample
         ? profileSample.sections.map(section => section.lanesOut[i]?.width ?? 0)
         : lanePoints.map(() => arm.nodes[0].laneWidthsOut[i] || 10);
+      const boundaries = laneBoundaries(lanePoints, widths);
 
       // Exit vector goes from center to out.
       const pNear = lanePoints[0];
@@ -399,7 +521,10 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       lanePaths.set(`${arm.id}_out_${i}`, {
         points: lanePoints,
         widths,
-        line: { kind: 'line', p: pNear, u: uOut, t0: 0, t1: 1000 }
+        boundaries,
+        line: { kind: 'line', p: pNear, u: uOut, t0: 0, t1: 1000 },
+        startCap,
+        endCap
       });
     }
   }
@@ -445,14 +570,14 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
         bypassId: bypass.id,
         entryRadius: resolved.entryRadius,
         exitRadius: resolved.exitRadius,
-        entry: { armId: bypass.fromArmId, laneIdx: bypass.fromLaneIndex, points: from.points, widths: from.widths },
+        entry: { armId: bypass.fromArmId, laneIdx: bypass.fromLaneIndex, points: from.points, widths: from.widths, boundaries: from.boundaries, endCap: from.endCap },
         entryConnector: resolved.entry.solution,
         lane: {
           line: { ...bypassLine, t0: resolved.entry.bypassT, t1: resolved.exit.bypassT },
           width: (fromWidth + toWidth) / 2
         },
         exitConnector: resolved.exit.solution,
-        exit: { armId: bypass.toArmId, laneIdx: bypass.toLaneIndex, points: to.points, widths: to.widths }
+        exit: { armId: bypass.toArmId, laneIdx: bypass.toLaneIndex, points: to.points, widths: to.widths, boundaries: to.boundaries, endCap: to.endCap }
       });
     }
   }
@@ -467,7 +592,8 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     laneIdx: number;
     dir: 'in' | 'out';
     endpoint: RoadEndpoint;
-    angle: number;
+    angle: number; // fillet tangent angle on the ring (post-divergence)
+    sortAngle: number; // undiverged crossing angle (fillet radius 0)
     fillet: FilletSolution;
     line: Line;
     dropsRing: boolean; // only meaningful for exits
@@ -499,8 +625,9 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
           if (endpoint === 'start' && (dir === 'in' ? bypassEntries : bypassExits).has(`${arm.id}_${laneIdx}`)) continue;
           const ring = resolveLaneRing(config, arm, dir, laneIdx, endpoint);
           if (!ring) continue;
-          const orientedPoints = endpointPath(path.points, endpoint);
-          const orientedWidths = endpointPath(path.widths, endpoint);
+          const midpoint = pathMidpointIndex(path.points);
+          const orientedPoints = endpointPath(path.points, endpoint, midpoint);
+          const orientedWidths = endpointPath(path.widths, endpoint, midpoint);
           const ringIndex = ringOuterEdgePathIndex(orientedPoints, ring);
           if ((orientedWidths[ringIndex] ?? 0) < .5) continue;
           const role = laneRoleAtEndpoint(dir, endpoint);
@@ -515,6 +642,7 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
             dir,
             endpoint,
             angle: solved.fillet.cutAngleRing,
+            sortAngle: laneRingCrossingAngle(orientedPoints, ring) ?? solved.fillet.cutAngleRing,
             fillet: solved.fillet,
             line: solved.line,
             dropsRing: role === 'exit' ? lanes[laneIdx].dropsRing ?? false : false,
@@ -526,12 +654,18 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
 
   for (const route of bypassRoutes) {
     if (connectedEndpoints.has(`${route.entry.armId}_in_${route.entry.laneIdx}_end`)) {
-      route.entry.points = endpointPath(route.entry.points, 'start');
-      route.entry.widths = endpointPath(route.entry.widths, 'start');
+      const midpoint = pathMidpointIndex(route.entry.points);
+      route.entry.points = endpointPath(route.entry.points, 'start', midpoint);
+      route.entry.widths = endpointPath(route.entry.widths, 'start', midpoint);
+      route.entry.boundaries = endpointBoundaries(route.entry.boundaries, 'start', midpoint);
+      delete route.entry.endCap;
     }
     if (connectedEndpoints.has(`${route.exit.armId}_out_${route.exit.laneIdx}_end`)) {
-      route.exit.points = endpointPath(route.exit.points, 'start');
-      route.exit.widths = endpointPath(route.exit.widths, 'start');
+      const midpoint = pathMidpointIndex(route.exit.points);
+      route.exit.points = endpointPath(route.exit.points, 'start', midpoint);
+      route.exit.widths = endpointPath(route.exit.widths, 'start', midpoint);
+      route.exit.boundaries = endpointBoundaries(route.exit.boundaries, 'start', midpoint);
+      delete route.exit.endCap;
     }
   }
 
@@ -552,6 +686,9 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
         dir: 'in',
         points: path.points,
         widths: path.widths,
+        boundaries: path.boundaries,
+        startCap: path.startCap,
+        endCap: path.endCap,
       });
     }
     for (let i = 0; i < arm.lanesOut.length; i++) {
@@ -567,6 +704,9 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
         dir: 'out',
         points: path.points,
         widths: path.widths,
+        boundaries: path.boundaries,
+        startCap: path.startCap,
+        endCap: path.endCap,
       });
     }
   }
@@ -576,9 +716,16 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     const path = lanePaths.get(key)!;
     const opposite = cut.endpoint === 'start' ? 'end' : 'start';
     const split = connectedEndpoints.has(`${key}_${opposite}`);
-    const points = split ? endpointPath(path.points, cut.endpoint) : cut.endpoint === 'start' ? path.points : [...path.points].reverse();
-    const widths = split ? endpointPath(path.widths, cut.endpoint) : cut.endpoint === 'start' ? path.widths : [...path.widths].reverse();
-    return { armId: cut.armId, laneIdx: cut.laneIdx, dir: cut.dir, endpoint: cut.endpoint, line: cut.line, fillet: cut.fillet, points, widths };
+    const midpoint = pathMidpointIndex(path.points);
+    const points = split ? endpointPath(path.points, cut.endpoint, midpoint) : cut.endpoint === 'start' ? path.points : [...path.points].reverse();
+    const widths = split ? endpointPath(path.widths, cut.endpoint, midpoint) : cut.endpoint === 'start' ? path.widths : [...path.widths].reverse();
+    const boundaries = split
+      ? endpointBoundaries(path.boundaries, cut.endpoint, midpoint)
+      : cut.endpoint === 'start' ? path.boundaries : reversedBoundaries(path.boundaries);
+    // A leg split at the midpoint ends mid-road; only an unsplit leg reaches
+    // the road's far cap (the 'start' cap when the polyline is reversed).
+    const endCap = split ? undefined : cut.endpoint === 'start' ? path.endCap : path.startCap;
+    return { armId: cut.armId, laneIdx: cut.laneIdx, dir: cut.dir, endpoint: cut.endpoint, line: cut.line, fillet: cut.fillet, points, widths, boundaries, endCap };
   };
 
   // 3. Compile routes per ring using dropsRing logic
@@ -621,9 +768,11 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
     // Determine the start for our perimeter walk. Use any dropped exit.
     const startDrop = droppedExits[0];
 
-    // Sort cuts downstream from startDrop
+    // Sort cuts downstream from startDrop using the undiverged crossing
+    // angles — users reason about where the lane meets the ring, not where
+    // the fillet arc happens to land after curving onto it.
     const sortedCuts = cuts.map(c => {
-      let d = angularDistance(startDrop.angle, c.angle, circDir);
+      let d = angularDistance(startDrop.sortAngle, c.sortAngle, circDir);
       if (d < 1e-5) {
         if (c === startDrop) d = 2 * Math.PI;
         else if (c.type === 'exit' && c.dropsRing) d = 2 * Math.PI;
@@ -654,12 +803,22 @@ export function compileRoutes(config: RoundaboutConfig, options: CompileOptions 
       } else if (cut.type === 'exit') {
         if (cut.dropsRing) {
           if (currentThroughEntry) {
+            // The undiverged ordering paired this entry with the drop, but the
+            // fillet tangent points can land out of order on the ring (the lane
+            // effectively "starts" on the ring after the exit left it). In that
+            // case draw the short bridge arc between the two tangent points
+            // rather than wrapping almost the full circle.
+            const forward = angularDistance(currentThroughEntry.angle, cut.angle, circDir);
+            const intended = angularDistance(currentThroughEntry.sortAngle, cut.sortAngle, circDir);
+            const bridged = Math.abs(2 * Math.PI - forward - intended) < Math.abs(forward - intended);
             routes.push({
               kind: 'through',
               id: `route_${currentThroughEntry.armId}-${currentThroughEntry.dir}-${currentThroughEntry.laneIdx}-${currentThroughEntry.endpoint}_to_${cut.armId}-${cut.dir}-${cut.laneIdx}-${cut.endpoint}`,
               ringId,
               entry: legForCut(currentThroughEntry) as EntryLeg,
-              ringSpan: { a0: currentThroughEntry.angle, a1: cut.angle, dir: circDir },
+              ringSpan: bridged
+                ? { a0: cut.angle, a1: currentThroughEntry.angle, dir: circDir }
+                : { a0: currentThroughEntry.angle, a1: cut.angle, dir: circDir },
               exit: legForCut(cut) as ExitLeg,
             });
             currentThroughEntry = null;

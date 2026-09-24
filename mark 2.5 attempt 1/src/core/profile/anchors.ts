@@ -1,7 +1,8 @@
 import { type RoundaboutConfig, type RoadProfilePoint } from '../../config/types';
 import { type RoadEndpoint } from '../routes';
 import { compileRoutes } from '../routes';
-import { estimateArmLength, getRoadProfile, interpolateProfile, type ProfileSection } from './model';
+import { canonicalizeRoadProfile, estimateArmLength, getRoadProfile, interpolateProfile, type ProfileSection } from './model';
+import { ensureTaperTipKeys, pruneTaperInteriorKeys } from './authored';
 import { profileGeometry, projectProfileDistance, type ProfileGeometry } from '../../profile/worldGeometry';
 import { type Vec2 } from '../../math/vector';
 
@@ -78,6 +79,23 @@ export function normalizeProfileAnchors(config: RoundaboutConfig): RoundaboutCon
     if (arm.nodes.length < 2) continue;
     const geometry = geometryByArm.get(arm.id)!;
     const totalLength = geometry.totalLength;
+    if (arm.authoredProfile) {
+      for (const endpoint of ['start', 'end'] as const) {
+        const anchor = arm.authoredProfile.median.find(key => key.endAnchor === endpoint);
+        if (anchor) anchor.distance = computeEndAnchorDistance(endpoint, geometry, divergences.get(arm.id));
+      }
+      arm.authoredProfile.median.sort((a, b) => a.distance - b.distance);
+      // Keys swallowed by a taper have no effect (the wedge fades from the
+      // attachment cross-section) but still render as stray nodes — drop them.
+      // Tip keys are the opposite: pinned at the taper's tip distance they hold
+      // the tip's offset, materialized at the interpolated value so nothing moves.
+      for (const shape of [...arm.authoredProfile.in, ...arm.authoredProfile.out]) {
+        pruneTaperInteriorKeys(shape);
+        ensureTaperTipKeys(shape);
+      }
+      delete arm.profile;
+      continue;
+    }
     arm.profile = getRoadProfile(arm, totalLength);
 
     for (const endpoint of ['start', 'end'] as const) {
@@ -130,7 +148,7 @@ export function normalizeProfileAnchors(config: RoundaboutConfig): RoundaboutCon
       arm.profile = arm.profile.filter(point => point.endAnchor || (point.distance >= lower && point.distance <= upper));
     }
 
-    arm.profile.sort((a, b) => a.distance - b.distance);
+    arm.profile = canonicalizeRoadProfile(arm.profile);
   }
 
   return next;

@@ -1,0 +1,73 @@
+{
+  "island": { "center": { "x": 0, "y": 0 }, "radius": 15 },
+  "circulation": "ccw",
+  "rings": [
+    { "id": "inner", "center": { "x": -8, "y": 0 }, "radius": 35, "width": 12 },
+    { "id": "outer", "center": { "x": 8, "y": 0 }, "radius": 35, "width": 12 }
+  ],
+  "arms": [
+    {
+      "id": "north",
+      "nodes": [
+        {
+          "id": "n_n0",
+          "point": { "x": -12.028730685164891, "y": -2.8114419400217514 },
+          "medianWidth": 4,
+          "laneWidthsIn": [10, 10],
+          "laneWidthsOut": [10, 10],
+          "tangentOut": { "x": 11.336436342625042, "y": -49.733171208417204 }
+        },
+        {
+          "id": "middle",
+          "point": { "x": 14, "y": -117 },
+          "tangentIn": { "x": -4.366145224644503, "y": 50.82164778195842 },
+          "tangentOut": { "x": 1.7968207158929637, "y": -20.914876819717726 },
+          "medianWidth": 4,
+          "laneWidthsIn": [10, 10],
+          "laneWidthsOut": [10, 10]
+        },
+        {
+          "id": "n_n1",
+          "point": { "x": 8.680460609393656, "y": -217.81871948179565 },
+          "medianWidth": 4,
+          "laneWidthsIn": [10, 10],
+          "laneWidthsOut": [10, 10],
+          "tangentIn": { "x": -10.71505936167504, "y": 21.518653944614552 }
+        }
+      ],
+      "lanesIn": [
+        { "targetsRing": "outer", "filletRadius": 40 },
+        { "targetsRing": "inner", "filletRadius": 40 }
+      ],
+      "lanesOut": [
+        { "sourceRing": "inner", "filletRadius": 40, "dropsRing": true },
+        { "sourceRing": "outer", "filletRadius": 40, "dropsRing": true }
+      ],
+      "profile": [
+        {
+          "id": "start",
+          "distance": 67.0166699796116,
+          "medianWidth": 4,
+          "lanesIn": [{ "width": 10, "gap": 0 }, { "width": 10, "gap": 0 }],
+          "lanesOut": [{ "width": 10, "gap": 0 }, { "width": 10, "gap": 0 }],
+          "endAnchor": "start"
+        },
+        {
+          "id": "middle-profile",
+          "distance": 125.56375748959925,
+          "medianWidth": 4,
+          "lanesIn": [{ "width": 10, "gap": 0 }, { "width": 10, "gap": 0 }],
+          "lanesOut": [{ "width": 10, "gap": 0 }, { "width": 10, "gap": 0 }]
+        },
+        {
+          "id": "end",
+          "distance": 219.22006262493437,
+          "medianWidth": 4,
+          "lanesIn": [{ "width": 10, "gap": 0 }, { "width": 10, "gap": 0 }],
+          "lanesOut": [{ "width": 10, "gap": 0 }, { "width": 10, "gap": 0 }],
+          "endAnchor": "end"
+        }
+      ]
+    }
+  ]
+}

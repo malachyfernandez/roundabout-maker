@@ -14,23 +14,26 @@ function pillSize(label: string) {
   return { width, height };
 }
 
-export const ProfileTransitionMarker: React.FC<{ added: boolean; tooltip: string; keyHints?: string; scale?: number; color?: string; dragging?: boolean; snapped?: boolean }> = ({ added, tooltip, keyHints, scale = 1, color = '#9747FF', dragging = false, snapped = false }) => {
+export const ProfileTransitionMarker: React.FC<{ added: boolean; tooltip: string; keyHints?: string; scale?: number; color?: string; snapped?: boolean; selected?: boolean; collapsed?: boolean }> = ({ added, tooltip, keyHints, scale = 1, color = '#9747FF', snapped = false, selected = false, collapsed = false }) => {
+  const [hovered, setHovered] = React.useState(false);
   const label = added ? 'START' : 'END';
   const { width, height } = pillSize(label);
   const w = width * scale;
   const h = height * scale;
   const cr = CIRCLE_RADIUS * scale;
 
-  // When dragging, collapse the pill into a circle and hide the text.
-  // Use CSS transitions on the rect for a smooth morph.
-  const targetW = dragging ? cr * 2 : w;
-  const targetH = dragging ? cr * 2 : h;
-  const targetRx = dragging ? cr : h / 2;
-  const textOpacity = dragging ? 0 : 1;
+  // The pill morphs into a dot while collapsed until hovered. Use CSS
+  // transitions on the rect for a smooth morph.
+  const shrunk = collapsed && !hovered;
+  const dotRadius = cr / 2;
+  const targetW = shrunk ? dotRadius * 2 : w;
+  const targetH = shrunk ? dotRadius * 2 : h;
+  const targetRx = shrunk ? dotRadius : h / 2;
+  const textOpacity = shrunk ? 0 : 1;
 
   return (
     <>
-      <rect x={-Math.max(targetW, w) / 2} y={-(HIT_HEIGHT * scale) / 2} width={Math.max(targetW, w)} height={HIT_HEIGHT * scale} fill="transparent" data-handle="true" data-tooltip={tooltip} data-keys={keyHints} />
+      <rect x={-Math.max(targetW, w) / 2} y={-(HIT_HEIGHT * scale) / 2} width={Math.max(targetW, w)} height={HIT_HEIGHT * scale} fill="transparent" data-handle="true" data-tooltip={tooltip} data-keys={keyHints} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)} />
       <rect
         x={-targetW / 2}
         y={-targetH / 2}
@@ -38,9 +41,9 @@ export const ProfileTransitionMarker: React.FC<{ added: boolean; tooltip: string
         height={targetH}
         rx={targetRx}
         ry={targetRx}
-        fill={snapped ? '#dcfce7' : '#fff'}
-        stroke={color}
-        strokeWidth={STROKE_WIDTH * scale}
+        fill={snapped ? '#dcfce7' : selected ? '#2563eb' : '#fff'}
+        stroke={selected ? '#2563eb' : color}
+        strokeWidth={(selected ? STROKE_WIDTH * 1.5 : STROKE_WIDTH) * scale}
         pointerEvents="none"
         style={{
           transition: 'all 160ms cubic-bezier(0.2, 1.45, 0.4, 1)',
@@ -49,7 +52,7 @@ export const ProfileTransitionMarker: React.FC<{ added: boolean; tooltip: string
       <text
         x={0}
         y={0}
-        fill={color}
+        fill={selected ? '#fff' : color}
         fontSize={FONT_SIZE * scale}
         fontWeight={800}
         fontFamily="Poppins, system-ui, sans-serif"

@@ -47,6 +47,7 @@ export const ToolPalette: React.FC = () => {
       ))}
       {activeTool === 'add-road' && pendingRoadStart && <div className="tool-hint">Click the outer road endpoint</div>}
       {activeTool === 'connect-bypass' && pendingBypassSource && <div className="tool-hint">Choose a green exit lane on another road · Esc to cancel</div>}
+      {activeTool === 'calibrate-bg' && <div className="tool-hint">Click two points on the reference image · Esc to cancel</div>}
     </div>
   );
 };

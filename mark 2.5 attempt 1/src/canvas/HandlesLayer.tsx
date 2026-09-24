@@ -4,7 +4,10 @@ import { Handle } from './Handle';
 import { TangentHandle } from './TangentHandle';
 import { RadiusGizmo } from './RadiusGizmo';
 import {
+  dragArm,
   dragArmNode,
+  dragArmNodes,
+  dragArms,
   dragBypassConnectorRadius,
   dragBypassLaneAngle,
   dragBypassLanePoint,
@@ -14,12 +17,17 @@ import {
   getLaneRingSnapPoints,
   assignLaneRingTarget,
   dragRingCenter,
+  dragRingCenters,
   dragRingRadius,
+  dragRingRadii,
   dragRingWidth,
-  dragTangentHandle
+  dragRingWidths,
+  dragTangentHandle,
+  rotateArm,
+  rotateArms
 } from '../editor/constraints';
 import { getBezierSegment } from '../math/spline';
-import { add, fromAngle, len, scale, sub, type Vec2 } from '../math/vector';
+import { add, angleOf, fromAngle, len, scale, sub, type Vec2 } from '../math/vector';
 import { type ResolvedSegment } from '../core/solver';
 import { type Arc, type Line, arcPoint } from '../geometry/primitives';
 import { type RoundaboutConfig, type SelectionTarget } from '../config/types';
@@ -37,10 +45,70 @@ type ConnectionMagnet =
   | { kind: 'ring'; ringId: string; point: Vec2 }
   | { kind: 'lane'; lane: LaneTarget; point: Vec2 };
 
+// Read the current multi-selection of one kind inside drag callbacks.
+const selectionsOfKind = <K extends SelectionTarget['kind']>(kind: K) =>
+  useEditorStore.getState().selections.filter((selected): selected is Extract<SelectionTarget, { kind: K }> => selected.kind === kind);
+
+// Bottom-center anchor for the selected roads' move/rotate handles: centered on
+// the combined node bounds and pushed just below the pavement's bottom edge.
+const selectedArmsAnchor = (config: RoundaboutConfig, armIds: string[], zoom: number): Vec2 | null => {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let bottom = -Infinity;
+  let halfWidth = 0;
+  let found = false;
+  for (const arm of config.arms) {
+    if (!armIds.includes(arm.id)) continue;
+    found = true;
+    for (const node of arm.nodes) {
+      minX = Math.min(minX, node.point.x);
+      maxX = Math.max(maxX, node.point.x);
+      bottom = Math.max(bottom, node.point.y);
+      const width = node.medianWidth + node.laneWidthsIn.reduce((sum, w) => sum + w, 0) + node.laneWidthsOut.reduce((sum, w) => sum + w, 0);
+      halfWidth = Math.max(halfWidth, width / 2);
+    }
+  }
+  return found ? { x: (minX + maxX) / 2, y: bottom + halfWidth + 16 * zoom } : null;
+};
+
+// Mean of all node points across the selected arms — the pivot for turning.
+const selectedArmsCenter = (config: RoundaboutConfig, armIds: string[]): Vec2 | null => {
+  const sum = { x: 0, y: 0 };
+  let count = 0;
+  for (const arm of config.arms) {
+    if (!armIds.includes(arm.id)) continue;
+    for (const node of arm.nodes) {
+      sum.x += node.point.x;
+      sum.y += node.point.y;
+      count++;
+    }
+  }
+  return count ? { x: sum.x / count, y: sum.y / count } : null;
+};
+
+const moveIcon = (
+  <g fill="none" stroke="#475569" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 9L2 12L5 15" />
+    <path d="M9 5L12 2L15 5" />
+    <path d="M15 19L12 22L9 19" />
+    <path d="M19 9L22 12L19 15" />
+    <path d="M2 12H22" />
+    <path d="M12 2V22" />
+  </g>
+);
+
+const rotateIcon = (
+  <g fill="none" stroke="#475569" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+  </g>
+);
+
 export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => {
   const committedConfig = useEditorStore(state => state.committedConfig);
   const draftConfig = useEditorStore(state => state.draftConfig);
   const selection = useEditorStore(state => state.selection);
+  const selections = useEditorStore(state => state.selections);
   const viewMode = useEditorStore(state => state.viewMode);
   const passThroughStack = useEditorStore(state => state.passThroughStack);
   const drag = useEditorStore(state => state.drag);
@@ -49,7 +117,7 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
   const [activeEndpoint, setActiveEndpoint] = React.useState<RoadEndpoint | null>(null);
   const magnetRef = React.useRef<ConnectionMagnet | null>(null);
   const setDrag = useEditorStore(state => state.setDrag);
-  const setSelection = useEditorStore(state => state.setSelection);
+  const selectTarget = useEditorStore(state => state.selectTarget);
   const commitDraft = useEditorStore(state => state.commitDraft);
   const setDraftConfig = useEditorStore(state => state.setDraftConfig);
   const config = draftConfig || committedConfig;
@@ -73,7 +141,7 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
   }), [committedConfig, selection]);
   const showIslandCenter = selection?.kind === 'island';
   const islandCenter = config.island.center ?? { x: 0, y: 0 };
-  const activeArm = selection?.kind === 'arm' || selection?.kind === 'arm-node' || selection?.kind === 'lane' || selection?.kind === 'profile-point'
+  const activeArm = selection?.kind === 'arm' || selection?.kind === 'arm-node' || selection?.kind === 'lane' || selection?.kind === 'lane-node' || selection?.kind === 'profile-point' || selection?.kind === 'profile-control'
     ? config.arms.find(arm => arm.id === selection.armId)
     : null;
   const armDirectlySelected = selection?.kind === 'arm';
@@ -226,24 +294,25 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
     return rawPosition;
   };
 
-  const finishLaneRingSnap = (_delta: Vec2, original: RoundaboutConfig): RoundaboutConfig | null => {
-    if (!selectedLane || !activeEndpoint) return null;
+  const finishLaneRingSnap = (_delta: Vec2, original: RoundaboutConfig, _clientPoint: Vec2, _modifiers: DragModifiers, dragTarget?: SelectionTarget): RoundaboutConfig | null => {
+    const lane = dragTarget?.kind === 'lane' ? dragTarget : selectedLane;
+    if (!lane || !activeEndpoint) return null;
     const endpoint = activeEndpoint;
     const magnet = magnetRef.current;
     clearDragFeedback();
     setActiveEndpoint(null);
     if (!magnet) return null;
     if (magnet.kind === 'ring') {
-      return assignLaneRingTarget(selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, magnet.ringId, original, endpoint);
+      return assignLaneRingTarget(lane.armId, lane.dir, lane.laneIndex, magnet.ringId, original, endpoint);
     }
     if (endpoint !== 'start') return null;
-    const existing = original.bypasses?.find(bypass => selectedLane.dir === 'in'
-      ? bypass.fromArmId === selectedLane.armId && bypass.fromLaneIndex === selectedLane.laneIndex
-      : bypass.toArmId === selectedLane.armId && bypass.toLaneIndex === selectedLane.laneIndex);
-    const radius = selectedLane.dir === 'in'
+    const existing = original.bypasses?.find(bypass => lane.dir === 'in'
+      ? bypass.fromArmId === lane.armId && bypass.fromLaneIndex === lane.laneIndex
+      : bypass.toArmId === lane.armId && bypass.toLaneIndex === lane.laneIndex);
+    const radius = lane.dir === 'in'
       ? existing?.entryRadius ?? existing?.radius ?? 32
       : existing?.exitRadius ?? existing?.radius ?? 32;
-    return connectBypassLanes(original, selectedLane, magnet.lane, radius);
+    return connectBypassLanes(original, lane, magnet.lane, radius);
   };
 
   return (
@@ -312,7 +381,8 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
                 fill="#dbeafe"
                 stroke="#2563eb"
                 tooltip="Drag to move the center island."
-                onDrag={dragIslandCenter}
+                keyHints={[HINT.noSnap]}
+                onDrag={(delta, original, modifiers) => dragIslandCenter(delta, original, !modifiers.mod)}
               />
               <RadiusGizmo
                 center={islandCenter}
@@ -320,7 +390,8 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
                 zoom={zoom}
                 color="#2563eb"
                 tooltip="Drag to change the center island radius."
-                onDrag={(delta, original) => dragIslandRadius(fromAngle(-Math.PI / 4), delta, original)}
+                keyHints={[HINT.noSnap]}
+                onDrag={(direction, delta, original, modifiers) => dragIslandRadius(direction, delta, original, !modifiers.mod)}
               />
             </>
           )}
@@ -334,7 +405,13 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
                 fill="#ecfeff"
                 stroke="#0891b2"
                 tooltip={`Drag to move ring ${selectedRing.id}.`}
-                onDrag={(delta, original) => dragRingCenter(selectedRing.id, delta, original)}
+                keyHints={[HINT.multiSelect, HINT.duplicate, HINT.noSnap]}
+                dragTarget={{ kind: 'ring', ringId: selectedRing.id }}
+                duplicateOwner
+                onDrag={(delta, original, modifiers, activeTarget) => {
+                  const ringIds = selectionsOfKind('ring').map(selected => selected.ringId);
+                  return activeTarget?.kind === 'ring' && ringIds.includes(activeTarget.ringId) ? dragRingCenters(ringIds, delta, original, !modifiers.mod) : dragRingCenter(selectedRing.id, delta, original, !modifiers.mod);
+                }}
               />
               <RadiusGizmo
                 center={selectedRing.center}
@@ -342,16 +419,27 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
                 zoom={zoom}
                 color="#0891b2"
                 tooltip={`Drag to change ring ${selectedRing.id}'s centerline radius.`}
-                onDrag={(delta, original) => dragRingRadius(selectedRing.id, fromAngle(-Math.PI / 4), delta, original)}
+                keyHints={[HINT.multiSelect, HINT.duplicate, HINT.noSnap]}
+                dragTarget={{ kind: 'ring', ringId: selectedRing.id }}
+                duplicateOwner
+                onDrag={(direction, delta, original, modifiers, activeTarget) => {
+                  const ringIds = selectionsOfKind('ring').map(selected => selected.ringId);
+                  return activeTarget?.kind === 'ring' && ringIds.includes(activeTarget.ringId) ? dragRingRadii(ringIds, direction, delta, original, !modifiers.mod) : dragRingRadius(selectedRing.id, direction, delta, original, !modifiers.mod);
+                }}
               />
               <RadiusGizmo
                 center={selectedRing.center}
                 radius={selectedRing.radius + selectedRing.width / 2}
-                angle={Math.PI / 4}
                 zoom={zoom}
                 color="#16a34a"
                 tooltip={`Drag to change ring ${selectedRing.id}'s pavement width.`}
-                onDrag={(delta, original) => dragRingWidth(selectedRing.id, fromAngle(Math.PI / 4), delta, original)}
+                keyHints={[HINT.multiSelect, HINT.duplicate, HINT.noSnap]}
+                dragTarget={{ kind: 'ring', ringId: selectedRing.id }}
+                duplicateOwner
+                onDrag={(direction, delta, original, modifiers, activeTarget) => {
+                  const ringIds = selectionsOfKind('ring').map(selected => selected.ringId);
+                  return activeTarget?.kind === 'ring' && ringIds.includes(activeTarget.ringId) ? dragRingWidths(ringIds, direction, delta, original, !modifiers.mod) : dragRingWidth(selectedRing.id, direction, delta, original, !modifiers.mod);
+                }}
               />
             </>
           )}
@@ -377,13 +465,18 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
                 key={`lane-fillet-${endpoint}`}
                 center={arc.c}
                 radius={arc.r}
-                angle={angle}
                 zoom={zoom}
                 color="#f97316"
-                handleAtCenter
                 arc={arc}
-                tooltip="Drag the curve center to increase or decrease this lane's connector radius."
-                onDrag={(delta, original) => dragLaneFilletRadius(selectedLane.armId, selectedLane.dir, selectedLane.laneIndex, endpoint, centerRate, delta, original)}
+                dragVector={centerRate}
+                tooltip="Drag the curve to increase or decrease this lane's connector radius."
+                keyHints={[HINT.duplicate]}
+                dragTarget={selectedLane}
+                duplicateOwner
+                onDrag={(direction, delta, original, _modifiers, activeTarget) => {
+                  const lane = activeTarget?.kind === 'lane' ? activeTarget : selectedLane;
+                  return dragLaneFilletRadius(lane.armId, lane.dir, lane.laneIndex, endpoint, direction, delta, original);
+                }}
               />
             );
           })}
@@ -396,13 +489,12 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
               <RadiusGizmo
                 center={arc.c}
                 radius={arc.r}
-                angle={angle}
                 zoom={zoom}
                 color="#16a34a"
-                handleAtCenter
                 arc={arc}
-                tooltip="Drag the entry connector center to change its radius."
-                onDrag={(delta, original) => dragBypassConnectorRadius(selectedBypass.id, 'entry', centerRate, delta, original)}
+                dragVector={centerRate}
+                tooltip="Drag the entry connector curve to change its radius."
+                onDrag={(direction, delta, original) => dragBypassConnectorRadius(selectedBypass.id, 'entry', direction, delta, original)}
               />
             );
           })()}
@@ -415,13 +507,12 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
               <RadiusGizmo
                 center={arc.c}
                 radius={arc.r}
-                angle={angle}
                 zoom={zoom}
                 color="#16a34a"
-                handleAtCenter
                 arc={arc}
-                tooltip="Drag the exit connector center to change its radius."
-                onDrag={(delta, original) => dragBypassConnectorRadius(selectedBypass.id, 'exit', centerRate, delta, original)}
+                dragVector={centerRate}
+                tooltip="Drag the exit connector curve to change its radius."
+                onDrag={(direction, delta, original) => dragBypassConnectorRadius(selectedBypass.id, 'exit', direction, delta, original)}
               />
             );
           })()}
@@ -499,21 +590,82 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
             return handles;
           })()}
 
-          {activeArm && (armDirectlySelected || selectedNodeId !== null) && activeArm.nodes.map(node => {
-            const isSelected = node.id === selectedNodeId;
+          {activeArm && armDirectlySelected && (() => {
+            const armIds = selections.filter(selected => selected.kind === 'arm').map(selected => selected.armId);
+            const anchor = selectedArmsAnchor(config, armIds.length ? armIds : [activeArm.id], zoom);
+            if (!anchor) return null;
+            const target = { kind: 'arm' as const, armId: activeArm.id };
+            const spacing = 14 * zoom;
+            return (
+              <>
+                <Handle
+                  x={anchor.x - spacing}
+                  y={anchor.y}
+                  zoom={zoom}
+                  radius={9}
+                  cursor="move"
+                  fill="#fff"
+                  stroke="#475569"
+                  tooltip="Drag to move the selected roads."
+                  keyHints={[HINT.multiSelect, HINT.duplicate, HINT.noSnap]}
+                  dragTarget={target}
+                  duplicateOwner
+                  icon={moveIcon}
+                  onDrag={(delta, original, modifiers, activeTarget) => {
+                    const selectedArmIds = selectionsOfKind('arm').map(selected => selected.armId);
+                    return activeTarget?.kind === 'arm' && selectedArmIds.includes(activeTarget.armId) ? dragArms(selectedArmIds, delta, original, !modifiers.mod) : dragArm(activeArm.id, delta, original, !modifiers.mod);
+                  }}
+                />
+                <Handle
+                  x={anchor.x + spacing}
+                  y={anchor.y}
+                  zoom={zoom}
+                  radius={9}
+                  fill="#fff"
+                  stroke="#475569"
+                  tooltip="Drag to turn the selected roads."
+                  keyHints={[HINT.duplicate]}
+                  dragTarget={target}
+                  duplicateOwner
+                  icon={rotateIcon}
+                  onDrag={(delta, original, _modifiers, activeTarget) => {
+                    const selectedArmIds = selectionsOfKind('arm').map(selected => selected.armId);
+                    const ids = selectedArmIds.length ? selectedArmIds : [activeArm.id];
+                    const pivot = selectedArmsCenter(original, ids);
+                    const startAnchor = selectedArmsAnchor(original, ids, zoom);
+                    if (!pivot || !startAnchor) return original;
+                    const startVec = sub(startAnchor, pivot);
+                    const angle = angleOf(add(startVec, delta)) - angleOf(startVec);
+                    return activeTarget?.kind === 'arm' && selectedArmIds.includes(activeTarget.armId) ? rotateArms(selectedArmIds, pivot, angle, original) : rotateArm(activeArm.id, pivot, angle, original);
+                  }}
+                />
+              </>
+            );
+          })()}
+
+          {activeArm && (armDirectlySelected || selectedNodeId !== null) && activeArm.nodes.map((node, nodeIndex) => {
+            const target = { kind: 'arm-node' as const, armId: activeArm.id, nodeId: node.id };
+            const isSelected = selections.some(selected => selected.kind === 'arm-node' && selected.armId === activeArm.id && selected.nodeId === node.id);
             return (
               <Handle
-                key={node.id}
+                key={nodeIndex}
                 x={node.point.x}
                 y={node.point.y}
                 zoom={zoom}
                 cursor="move"
-                fill={isSelected ? '#dbeafe' : '#fff'}
-                stroke="#2563eb"
-                tooltip={isSelected ? 'Drag to move this node.' : 'Click to select this node, or drag to move it.'}
-                onDragStart={() => { if (!isSelected) setSelection({ kind: 'arm-node', armId: activeArm.id, nodeId: node.id }); }}
-                onDrag={(delta, original) => dragArmNode(activeArm.id, node.id, delta, original)}
-                onClick={isSelected ? undefined : original => { setSelection({ kind: 'arm-node', armId: activeArm.id, nodeId: node.id }); return original; }}
+                fill={isSelected ? '#2563eb' : '#fff'}
+                stroke={isSelected ? '#fff' : '#2563eb'}
+                tooltip={isSelected ? 'Drag to move the selected nodes.' : 'Click to select this node, or drag to move it.'}
+                keyHints={[HINT.multiSelect, HINT.duplicate, HINT.noSnap]}
+                dragTarget={target}
+                duplicateOwner
+                onDragStart={modifiers => selectTarget(target, modifiers.shift)}
+                onDrag={(delta, original, modifiers, activeTarget) => {
+                  const selectedNodes = selectionsOfKind('arm-node');
+                  return activeTarget?.kind === 'arm-node' && selectedNodes.some(selected => selected.armId === activeTarget.armId && selected.nodeId === activeTarget.nodeId)
+                    ? dragArmNodes(original, selectedNodes, delta, !modifiers.mod)
+                    : dragArmNode(activeArm.id, node.id, delta, original, !modifiers.mod);
+                }}
               />
             );
           })}
@@ -532,10 +684,12 @@ export const HandlesLayer: React.FC<Props> = React.memo(({ zoom, segments }) => 
             fill="#f3e8ff"
             stroke="#7c3aed"
             dragType="lane-ring-snap"
+            dragTarget={selectedLane}
+            duplicateOwner
             followPointer
             springDrag={Boolean(activeMagnet)}
             resolveDragPosition={resolveConnectionDragPosition}
-            keyHints={[HINT.noSnap]}
+            keyHints={[HINT.duplicate, HINT.noSnap]}
             onDragStart={() => {
               clearDragFeedback();
               setActiveEndpoint(endpoint);

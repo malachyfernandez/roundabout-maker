@@ -5,17 +5,20 @@
 
 export type KeyHint = { key: 'shift' | 'mod' | 'alt' | (string & {}); action: string };
 
-export type DragModifiers = { shift: boolean; mod: boolean };
+export type DragModifiers = { shift: boolean; mod: boolean; alt: boolean };
 
-export const dragModifiers = (event: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }): DragModifiers => ({
+export const dragModifiers = (event: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): DragModifiers => ({
   shift: event.shiftKey,
-  mod: event.ctrlKey || event.metaKey
+  mod: event.ctrlKey || event.metaKey,
+  alt: event.altKey
 });
 
 export const dataKeys = (...hints: KeyHint[]) => JSON.stringify(hints);
 
 export const HINT = {
+  multiSelect: { key: 'shift', action: 'Add/remove selection' },
   isolateSection: { key: 'shift', action: 'Only this section' },
+  duplicate: { key: 'alt', action: 'Duplicate' },
   noSnap: { key: 'mod', action: 'No snapping' }
 } as const satisfies Record<string, KeyHint>;
 

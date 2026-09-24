@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { type RoundaboutConfig } from '../../config/types';
 import { cross, dot } from '../../math/vector';
-import { dragArmNode, insertArmNode, removeArmNode } from './arm';
+import { dragArmNode, insertArmNode, removeArmNode, rotateArm } from './arm';
 
 const config: RoundaboutConfig = {
   island: { center: { x: 0, y: 0 }, radius: 15 },
@@ -54,5 +54,21 @@ describe('arm node constraints', () => {
     const moved = dragArmNode('road', 'inserted', { x: 4, y: 7 }, inserted);
 
     expect(removeArmNode(moved, 'road', 'inserted')).toEqual(automatic);
+  });
+});
+
+describe('rotateArm', () => {
+  it('rotates node points and tangents around the pivot', () => {
+    const rotated = rotateArm('road', { x: 0, y: 0 }, Math.PI / 2, config);
+    const end = rotated.arms[0].nodes[2];
+
+    expect(end.point.x).toBeCloseTo(0);
+    expect(end.point.y).toBeCloseTo(20);
+    expect(end.tangentIn!.x).toBeCloseTo(0);
+    expect(end.tangentIn!.y).toBeCloseTo(-3);
+  });
+
+  it('leaves the config unchanged for an unknown arm', () => {
+    expect(rotateArm('missing', { x: 0, y: 0 }, 1, config)).toEqual(config);
   });
 });

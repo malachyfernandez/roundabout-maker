@@ -1,7 +1,9 @@
 import React, { useRef } from 'react';
 import { type RoundaboutConfig } from '../config/types';
 import { useEditorStore } from '../editor/editorStore';
-import { RoadProfileEditor } from './RoadProfileEditor';
+import { removeRing } from '../editor/constraints';
+import { estimateArmLength, getRoadProfile } from '../core/profile';
+import { findLanePoint } from '../core/profile/authored';
 import { MARKING_RULES } from '../rendering/markings';
 
 const STORAGE_PREFIX = 'roundabout_';
@@ -32,6 +34,7 @@ type Props = {
 
 export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }) => {
   const selection = useEditorStore(state => state.selection);
+  const selections = useEditorStore(state => state.selections);
   const setSelection = useEditorStore(state => state.setSelection);
   const resetToDefault = useEditorStore(state => state.resetToDefault);
   const setActiveTool = useEditorStore(state => state.setActiveTool);
@@ -153,16 +156,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
         <h3 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           Ring: {ring.id}
           <button onClick={() => {
-            handleChange(c => {
-              const ringId = c.rings[i].id;
-              c.rings.splice(i, 1);
-              for (const arm of c.arms) {
-                for (const lane of [...arm.lanesIn, ...arm.lanesOut]) {
-                  if (lane.sourceRing === ringId) delete lane.sourceRing;
-                  if (lane.targetsRing === ringId) delete lane.targetsRing;
-                }
-              }
-            });
+            onChange(removeRing(config, ring.id));
             setSelection(null);
           }} style={{ color: 'red', border: 'none', background: 'none', cursor: 'pointer', fontSize: 18 }}>✕</button>
         </h3>
@@ -223,7 +217,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
                 if (connection.toArmId === oldId) connection.toArmId = newId;
               });
             });
-            if ((selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'arm-node' || selection?.kind === 'profile-point') && selection.armId === arm.id) {
+            if (selection && 'armId' in selection && selection.armId === arm.id) {
               setSelection({ ...selection, armId: newId });
             }
           }} style={{marginLeft: 4, width: 150}} />
@@ -231,15 +225,17 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
 
         {selection?.kind === 'lane' && (
           <div style={{ marginBottom: 10, padding: '7px 9px', color: '#1e3a8a', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 6, fontSize: 12 }}>
-            Editing {selection.dir === 'in' ? 'entry' : 'exit'} lane {selection.laneIndex + 1}; the complete road remains highlighted in blue.
+            Editing {selection.dir === 'in' ? 'entry' : 'exit'} lane {selection.laneIndex + 1} — double-click its dashed path to add lane nodes; drag a node along the road to move it or sideways to shift the lane.
           </div>
         )}
-
-        <RoadProfileEditor
-          config={config}
-          armId={arm.id}
-          onChange={onChange}
-        />
+        {selection?.kind === 'lane-node' && (() => {
+          const point = findLanePoint(arm, getRoadProfile(arm, estimateArmLength(arm)), selection.dir, selection.laneIndex, selection.pointId);
+          return (
+            <div style={{ marginBottom: 10, padding: '7px 9px', color: '#1e3a8a', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 6, fontSize: 12 }}>
+              Lane node on {selection.dir === 'in' ? 'entry' : 'exit'} lane {selection.laneIndex + 1}{point ? `, ${Math.round(point.distance)} ft along the road` : ''}. Drag along the road to reposition it or sideways to shift the lane; its icons adjust offset and width.
+            </div>
+          );
+        })()}
 
         {/* Entry Lanes */}
         <div style={{marginTop: 12, borderTop: '1px solid #ddd', paddingTop: 8}}>
@@ -247,7 +243,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
             <strong>Entry Lanes (In)</strong>
           </div>
           {arm.lanesIn.map((lane, li) => {
-            const isLaneSelected = selection?.kind === 'lane' && selection.armId === arm.id && selection.dir === 'in' && selection.laneIndex === li;
+            const isLaneSelected = selections.some(selected => selected.kind === 'lane' && selected.armId === arm.id && selected.dir === 'in' && selected.laneIndex === li);
             const bypass = config.bypasses?.find(connection => connection.fromArmId === arm.id && connection.fromLaneIndex === li);
             return (
               <div key={li} style={{
@@ -318,7 +314,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
             <strong>Exit Lanes (Out)</strong>
           </div>
           {arm.lanesOut.map((lane, li) => {
-            const isLaneSelected = selection?.kind === 'lane' && selection.armId === arm.id && selection.dir === 'out' && selection.laneIndex === li;
+            const isLaneSelected = selections.some(selected => selected.kind === 'lane' && selected.armId === arm.id && selected.dir === 'out' && selected.laneIndex === li);
             return (
               <div key={li} style={{
                 marginBottom: 8, padding: 8, 
@@ -410,7 +406,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
           </select>
           {selection && (
             <button onClick={() => setSelection(null)} style={{ fontSize: 12, padding: '4px 8px' }}>
-              Back to Global
+              {selections.length > 1 ? `Clear ${selections.length} selected` : 'Back to Global'}
             </button>
           )}
         </div>
@@ -428,7 +424,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
       {!selection && renderGlobal()}
       {selection?.kind === 'island' && renderIsland()}
       {selection?.kind === 'ring' && renderRing(selection.ringId)}
-      {(selection?.kind === 'lane' || selection?.kind === 'arm' || selection?.kind === 'arm-node' || selection?.kind === 'profile-point') && renderArm(selection.armId)}
+      {selection && 'armId' in selection && renderArm(selection.armId)}
     </div>
   );
 });
