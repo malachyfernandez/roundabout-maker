@@ -161,23 +161,48 @@ const laneScope = (target: SelectionTarget | null): LaneScope | null => {
 
 const laneScopeKey = (scope: LaneScope) => `${scope.armId}:${scope.dir}:${scope.laneIndex}`;
 
-const releaseNeutralNode = (config: RoundaboutConfig, scope: LaneScope, pointId: string) => {
-  const arm = config.arms.find(candidate => candidate.id === scope.armId);
+// When a lane scope loses all selection, sweep every lane on the arm for keys
+// that hold nothing — a key whose removal leaves the evaluated lane unchanged
+// is an editor artifact, not authored geometry. Drag anchoring pins and
+// materialized bend nodes were never selected, so they never entered the old
+// per-pointId release path and lingered as stray nodes; sweeping the whole
+// arm on deselection releases them wherever they came from. Keys at cap ends
+// and taper terminals are structural (they anchor the span's extent and the
+// tip's editable offset) and are never released; a lane keeps at least one key.
+const releaseNeutralNodes = (config: RoundaboutConfig, armId: string): RoundaboutConfig => {
+  const arm = config.arms.find(candidate => candidate.id === armId);
   const document = arm?.authoredProfile;
-  const shape = document?.[scope.dir][scope.laneIndex];
-  const index = shape?.keys.findIndex(key => key.id === pointId) ?? -1;
-  if (!document || !shape || index < 0 || shape.keys.length <= 1) return config;
-  const key = shape.keys[index];
-  if (document.median.some(candidate => candidate.endAnchor && Math.abs(candidate.distance - key.distance) < 1e-6)) return config;
-  if (shape.spans.some(span => (['low', 'high'] as const).some(side => {
-    const terminal = span[side];
-    return terminal.kind === 'free' && Math.abs(terminal.attach - key.distance) < 1e-6;
-  }))) return config;
-  const without = { ...shape, keys: shape.keys.filter(candidate => candidate.id !== key.id) };
-  const value = evaluateLane(document, without, key.distance);
-  if (Math.abs(value.width - key.width) > .01 || Math.abs(value.gap - key.gap) > .01) return config;
+  if (!document) return config;
+  const drops = new Map<string, Set<string>>();
+  for (const dir of ['in', 'out'] as const) document[dir].forEach((shape, laneIndex) => {
+    const dead = new Set<string>();
+    let changed = true;
+    while (changed && shape.keys.length - dead.size > 1) {
+      changed = false;
+      for (const key of shape.keys) {
+        if (dead.has(key.id) || shape.keys.length - dead.size <= 1) continue;
+        if (document.median.some(candidate => candidate.endAnchor && Math.abs(candidate.distance - key.distance) < 1e-6)) continue;
+        if (shape.spans.some(span => (['low', 'high'] as const).some(side => {
+          const terminal = span[side];
+          return terminal.kind === 'free' && (Math.abs(terminal.attach - key.distance) < 1e-6 || Math.abs(terminal.tip - key.distance) < 1e-6);
+        }))) continue;
+        const kept = { ...shape, keys: shape.keys.filter(candidate => candidate.id !== key.id && !dead.has(candidate.id)) };
+        const value = evaluateLane(document, kept, key.distance);
+        if (Math.abs(value.width - key.width) <= .01 && Math.abs(value.gap - key.gap) <= .01) {
+          dead.add(key.id);
+          changed = true;
+        }
+      }
+    }
+    if (dead.size) drops.set(`${dir}:${laneIndex}`, dead);
+  });
+  if (!drops.size) return config;
   const updated = structuredClone(config);
-  updated.arms.find(candidate => candidate.id === scope.armId)!.authoredProfile![scope.dir][scope.laneIndex].keys.splice(index, 1);
+  const target = updated.arms.find(candidate => candidate.id === armId)!.authoredProfile!;
+  for (const dir of ['in', 'out'] as const) target[dir].forEach((shape, laneIndex) => {
+    const dead = drops.get(`${dir}:${laneIndex}`);
+    if (dead) shape.keys = shape.keys.filter(key => !dead.has(key.id));
+  });
   return updated;
 };
 
@@ -192,7 +217,7 @@ const repairedSelectionState = (config: RoundaboutConfig, selections: SelectionT
 export const useEditorStore = create<EditorState>((set, get) => {
   let pendingDraft: RoundaboutConfig | null | undefined;
   let draftFrame: number | null = null;
-  const pendingNodeRelease = new Map<string, { scope: LaneScope; pointIds: Set<string> }>();
+  const pendingNodeRelease = new Map<string, LaneScope>();
   const cancelDraftFrame = () => {
     if (draftFrame !== null) cancelAnimationFrame(draftFrame);
     draftFrame = null;
@@ -204,18 +229,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
       return scope ? [laneScopeKey(scope)] : [];
     }));
     for (const target of current.selections) {
-      if (target.kind !== 'lane-node' && target.kind !== 'profile-control') continue;
-      const scope = laneScope(target)!;
-      const key = laneScopeKey(scope);
-      const entry = pendingNodeRelease.get(key) ?? { scope, pointIds: new Set<string>() };
-      entry.pointIds.add(target.pointId);
-      pendingNodeRelease.set(key, entry);
+      const scope = laneScope(target);
+      if (scope) pendingNodeRelease.set(laneScopeKey(scope), scope);
     }
     let committedConfig = current.committedConfig;
-    for (const [key, entry] of pendingNodeRelease) {
+    for (const [key, scope] of pendingNodeRelease) {
       if (occupied.has(key)) continue;
       pendingNodeRelease.delete(key);
-      for (const pointId of entry.pointIds) committedConfig = releaseNeutralNode(committedConfig, entry.scope, pointId);
+      committedConfig = releaseNeutralNodes(committedConfig, scope.armId);
     }
     if (committedConfig !== current.committedConfig) localStorage.setItem('roundabout_config', JSON.stringify(committedConfig));
     set({ selection, selections, committedConfig });

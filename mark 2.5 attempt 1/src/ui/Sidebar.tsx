@@ -42,9 +42,39 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
   const viewMode = useEditorStore(state => state.viewMode);
   const importInputRef = useRef<HTMLInputElement>(null);
 
-  const handleExport = () => {
+  const handleExport = async () => {
     const data = exportPersistedState();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const json = JSON.stringify(data, null, 2);
+
+    // Prefer a native "save as" picker where the File System Access API exists.
+    const showSaveFilePicker = (window as unknown as {
+      showSaveFilePicker?: (options: {
+        suggestedName?: string;
+        types?: { description: string; accept: Record<string, string[]> }[];
+      }) => Promise<{
+        name: string;
+        createWritable: () => Promise<{ write: (data: string) => Promise<void>; close: () => Promise<void> }>;
+      }>;
+    }).showSaveFilePicker;
+
+    if (showSaveFilePicker) {
+      try {
+        const handle = await showSaveFilePicker({
+          suggestedName: 'roundabout-export.json',
+          types: [{ description: 'Roundabout export', accept: { 'application/json': ['.json'] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(json);
+        await writable.close();
+        useEditorStore.getState().addToast({ title: `Exported to ${handle.name}`, dismissible: true });
+        return;
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        // Picker failed for another reason — fall back to a normal download.
+      }
+    }
+
+    const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -368,7 +398,7 @@ export const Sidebar: React.FC<Props> = React.memo(({ config, onChange, errors }
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             onClick={handleExport}
-            data-tooltip="Download the current design, settings, and viewport as a JSON file."
+            data-tooltip="Save the current design, settings, and viewport to a JSON file at a location you choose."
             style={{ fontSize: 12, padding: '4px 8px' }}
           >
             Export

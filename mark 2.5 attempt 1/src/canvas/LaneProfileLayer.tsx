@@ -459,10 +459,18 @@ export const LaneProfileLayer: React.FC<Props> = React.memo(({ zoom, onSmartZoom
         const mapped = originalTargets.map(target => {
           const sourceArm = state.original.arms.find(candidate => candidate.id === target.armId);
           const shape = sourceArm?.authoredProfile?.[target.dir][target.laneIndex];
-          if (!shape || shape.keys.some(key => key.id === target.pointId)
-            || shape.spans.some(span => ['low', 'high'].some(side => `${span.id}_${side}_attach` === target.pointId || `${span.id}_${side}_tip` === target.pointId))) return target;
-          const point = findLanePoint(sourceArm!, getRoadProfile(sourceArm!, estimateArmLength(sourceArm!)), target.dir, target.laneIndex, target.pointId);
-          if (!point) return target;
+          const point = sourceArm && findLanePoint(sourceArm, getRoadProfile(sourceArm, estimateArmLength(sourceArm)), target.dir, target.laneIndex, target.pointId);
+          if (!shape || !point) return target;
+          // The lane owns this node when a key or a free terminal sits at its
+          // station — matching by distance, since a borrowed point id can name
+          // a key at a different station (or another lane's primitive).
+          const ownsPrimitive = shape.keys.some(key => Math.abs(key.distance - point.distance) < 1e-6)
+            || shape.spans.some(span => (['low', 'high'] as const).some(side => {
+              const terminal = span[side];
+              return terminal.kind === 'free'
+                && (Math.abs(terminal.attach - point.distance) < 1e-6 || Math.abs(terminal.tip - point.distance) < 1e-6);
+            }));
+          if (ownsPrimitive) return target;
           const added = addProfilePoint(state.original, target.armId, point.distance, target.dir, target.laneIndex);
           if (!added.pointId) return target;
           state.original = added.config;

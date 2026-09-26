@@ -562,7 +562,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
       if (sel.kind === 'lane-node') {
         const profile = getRoadProfile(arm, estimateArmLength(arm));
         const point = findLanePoint(arm, profile, sel.dir, sel.laneIndex, sel.pointId);
-        if (!point || (profile.length > 2 && !point.endAnchor && (!arm.authoredProfile || arm.authoredProfile[sel.dir][sel.laneIndex]?.keys.some(key => key.id === sel.pointId)))) return;
+        if (!point || (profile.length > 2 && !point.endAnchor && (!arm.authoredProfile || arm.authoredProfile[sel.dir][sel.laneIndex]?.keys.some(key => Math.abs(key.distance - point.distance) < 1e-6)))) return;
         title = "Can't delete lane node";
         subtitle = 'The first and last nodes of a road cannot be deleted.';
       } else if (sel.kind === 'profile-point') {
@@ -1003,7 +1003,7 @@ export const Viewport: React.FC<Props> = ({ renderConfig, segments }) => {
         const point = findLanePoint(arm, profile, selection.dir, selection.laneIndex, selection.pointId);
         // Anchored end nodes can't be deleted; the button stays hidden and
         // pressing Delete explains why via a toast.
-        if (!point || !(profile.length > 2 && !point.endAnchor) || arm.authoredProfile && !arm.authoredProfile[selection.dir][selection.laneIndex]?.keys.some(key => key.id === selection.pointId)) return null;
+        if (!point || !(profile.length > 2 && !point.endAnchor) || arm.authoredProfile && !arm.authoredProfile[selection.dir][selection.laneIndex]?.keys.some(key => Math.abs(key.distance - point.distance) < 1e-6)) return null;
         const rect = (containerRef.current ?? svg).getBoundingClientRect();
         return (
           <FloatingButton

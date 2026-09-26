@@ -55,6 +55,33 @@ describe('multi-selection', () => {
       vi.unstubAllGlobals();
     }
   });
+  it('releases never-selected neutral keys across the arm on lane exit but keeps authored bends', () => {
+    const store = useEditorStore.getState();
+    const previous = store.committedConfig;
+    const saved = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) });
+    try {
+      store.setCommittedConfig(config());
+      const source = structuredClone(useEditorStore.getState().committedConfig);
+      const armId = source.arms[0].id;
+      const out = source.arms[0].authoredProfile!.out[0];
+      const inbound = source.arms[0].authoredProfile!.in[0];
+      const mid = (out.keys[0].distance + out.keys.at(-1)!.distance) / 2;
+      out.keys.push({ id: 'injected_neutral', distance: mid, width: 10, gap: 0 });
+      inbound.keys.push({ id: 'injected_bend', distance: mid, width: 10, gap: 4 });
+      store.setCommittedConfig(source);
+      const keys = (dir: 'in' | 'out', laneIndex: number) => useEditorStore.getState().committedConfig.arms[0].authoredProfile![dir][laneIndex].keys;
+      expect(keys('out', 0).some(key => key.id === 'injected_neutral')).toBe(true);
+      store.setSelection({ kind: 'lane', armId, dir: 'out', laneIndex: 0 });
+      expect(keys('out', 0).some(key => key.id === 'injected_neutral')).toBe(true);
+      store.setSelection(null);
+      expect(keys('out', 0).some(key => key.id === 'injected_neutral')).toBe(false);
+      expect(keys('in', 0).some(key => key.id === 'injected_bend')).toBe(true);
+    } finally {
+      useEditorStore.setState({ committedConfig: previous, selection: null, selections: [] });
+      vi.unstubAllGlobals();
+    }
+  });
   it('compares targets by identity and repairs missing children to their road', () => {
     expect(sameSelectionTarget({ kind: 'lane', armId: 'road', dir: 'in', laneIndex: 0 }, { kind: 'lane', armId: 'road', dir: 'in', laneIndex: 0 })).toBe(true);
     expect(repairSelections(config(), [{ kind: 'arm-node', armId: 'road', nodeId: 'missing' }])).toEqual([{ kind: 'arm', armId: 'road' }]);

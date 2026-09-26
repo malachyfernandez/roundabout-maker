@@ -24,11 +24,16 @@ export function setProfileControl(
     const shape = arm.authoredProfile[dir][laneIndex];
     const point = findLanePoint(arm, getRoadProfile(arm, estimateArmLength(arm)), dir, laneIndex, pointId);
     if (!shape || !point) return next;
-    let key = shape.keys.find(candidate => candidate.id === pointId);
+    // The node's key is the one pinned at its station — pointId can name a
+    // different station (or another lane's primitive, since an inherited bend
+    // borrows that terminal's id), so resolve by distance. A materialized key
+    // gets a lane-scoped id: reusing the borrowed pointId would stamp the same
+    // id into two lanes' keys and make their nodes select and edit as one.
+    let key = shape.keys.find(candidate => Math.abs(candidate.distance - point.distance) < 1e-6);
     if (!key) {
       const current = evaluateLane(arm.authoredProfile, shape, point.distance);
       if (Math.abs(current[kind] - value) < 1e-6) return next;
-      key = { id: pointId, distance: point.distance, width: current.width, gap: current.gap };
+      key = { id: `${pointId}_${dir}${laneIndex}`, distance: point.distance, width: current.width, gap: current.gap };
       shape.keys.push(key);
       shape.keys.sort((a, b) => a.distance - b.distance);
     }
@@ -187,7 +192,7 @@ export function moveProfileLanePoint(original: RoundaboutConfig, armId: string, 
         return next;
       }
     }
-    const key = shape.keys.find(candidate => candidate.id === pointId);
+    const key = shape.keys.find(candidate => Math.abs(candidate.distance - point.distance) < 1e-6);
     if (!key || document.median.some(candidate => candidate.endAnchor && Math.abs(candidate.distance - key.distance) < 1e-6)) return next;
     const ordered = [...shape.keys].sort((a, b) => a.distance - b.distance);
     const index = ordered.findIndex(candidate => candidate.id === key.id);
@@ -281,10 +286,14 @@ export function pinProfileLaneNodes(
     if (insideLaneTaper(shape, anchor.distance)) continue;
     const value = evaluateLane(arm.authoredProfile, shape, anchor.distance);
     if (!isProfileLanePresent(value)) continue;
+    // The pinned node borrows the shared cross-section's point id — which may
+    // name another lane's taper terminal. Stamping it verbatim would give two
+    // lanes a key with the same id; the lane-scoped suffix keeps it unique.
+    const id = `${anchor.pointId}_${anchor.dir}${anchor.laneIndex}`;
     shape.keys.push({
-      id: shape.keys.some(key => key.id === anchor.pointId)
+      id: shape.keys.some(key => key.id === id)
         ? `${anchor.armId}_lane_${anchor.dir}_${anchor.laneIndex}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
-        : anchor.pointId,
+        : id,
       distance: anchor.distance,
       width: value.width,
       gap: value.gap
@@ -335,8 +344,9 @@ export function removeProfileLanePoint(original: RoundaboutConfig, armId: string
   if (!arm) return next;
   if (arm.authoredProfile) {
     const shape = arm.authoredProfile[dir][laneIndex];
-    const index = shape?.keys.findIndex(key => key.id === pointId) ?? -1;
-    if (index >= 0 && !arm.authoredProfile.median.some(candidate => candidate.endAnchor && Math.abs(candidate.distance - shape.keys[index].distance) < 1e-6)) shape.keys.splice(index, 1);
+    const point = shape && findLanePoint(arm, getRoadProfile(arm, estimateArmLength(arm)), dir, laneIndex, pointId);
+    const index = shape && point ? shape.keys.findIndex(key => Math.abs(key.distance - point.distance) < 1e-6) : -1;
+    if (shape && index >= 0 && !arm.authoredProfile.median.some(candidate => candidate.endAnchor && Math.abs(candidate.distance - shape.keys[index].distance) < 1e-6)) shape.keys.splice(index, 1);
     return next;
   }
   arm.profile = getRoadProfile(arm, estimateArmLength(arm));
@@ -606,23 +616,35 @@ export function addProfileLane(original: RoundaboutConfig, armId: string, pointI
     const high = profileCap(document, 'high');
     const free = !atCapEnd && start.distance > low + DEFAULT_LANE_TAPER + 1 && start.distance < high - DEFAULT_LANE_TAPER - 1;
     const id = `${arm.id}_${dir}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-    // A lane inserted inside an existing lane takes over that lane's
-    // footprint: the displaced lane's gap moves onto the new lane so the two
-    // stay adjacent and the existing offset strip keeps its position.
-    const displaced = document[dir][index];
-    const gapAt = (distance: number) => displaced ? evaluateLane(document, displaced, distance).gap : 0;
+    const width = 10;
     const shape = {
-      keys: [{ id: `${id}_start`, distance: low, width: 10, gap: gapAt(low) }, { id: `${id}_end`, distance: high, width: 10, gap: gapAt(high) }],
+      keys: [{ id: `${id}_start`, distance: low, width, gap: 0 }, { id: `${id}_end`, distance: high, width, gap: 0 }],
       spans: [{ id: `${id}_span`, low: free && dir === 'out' ? { kind: 'free' as const, tip: start.distance - DEFAULT_LANE_TAPER, attach: start.distance } : { kind: 'cap' as const }, high: free && dir === 'in' ? { kind: 'free' as const, tip: start.distance + DEFAULT_LANE_TAPER, attach: start.distance } : { kind: 'cap' as const } }]
     };
     ensureTaperTipKeys(shape);
+    for (const span of shape.spans) for (const side of ['low', 'high'] as const) {
+      const terminal = span[side];
+      if (terminal.kind !== 'free') continue;
+      if (!shape.keys.some(key => Math.abs(key.distance - terminal.attach) < 1e-6)) shape.keys.push({ id: `${span.id}_${side}_attach`, distance: terminal.attach, width, gap: 0 });
+    }
+    shape.keys.sort((a, b) => a.distance - b.distance);
+    // A lane inserted inside an existing lane consumes the displaced lane's
+    // offset strip first — its width is subtracted from the gap — so where it
+    // fits nothing else moves; whatever doesn't fit pushes the displaced lane
+    // outward while the two stay adjacent.
+    const displaced = document[dir][index];
+    for (const key of shape.keys) {
+      const offset = displaced ? evaluateLane(document, displaced, key.distance).gap : 0;
+      key.gap = Math.max(0, offset - evaluateLane(document, shape, key.distance).width);
+    }
     document[dir].splice(index, 0, shape);
     if (displaced) for (const key of displaced.keys) key.gap = 0;
   } else for (const point of arm.profile!) {
     const lanes = dir === 'in' ? point.lanesIn : point.lanesOut;
     const displaced = lanes[index];
     const downstream = atCapEnd || (dir === 'in' ? point.distance <= start.distance : point.distance >= start.distance);
-    lanes.splice(index, 0, { width: downstream ? 10 : 0, gap: displaced?.gap ?? 0 });
+    const width = downstream ? 10 : 0;
+    lanes.splice(index, 0, { width, gap: Math.max(0, (displaced?.gap ?? 0) - width) });
     if (displaced) displaced.gap = 0;
   }
   for (const node of arm.nodes) (dir === 'in' ? node.laneWidthsIn : node.laneWidthsOut).splice(index, 0, 10);
@@ -672,10 +694,31 @@ export function removeProfileLane(original: RoundaboutConfig, armId: string, dir
   const next = structuredClone(original);
   const arm = next.arms.find(candidate => candidate.id === armId);
   if (!arm) return next;
+  // The removed lane's offset transfers to the next lane outward (if one
+  // exists) so the strip is preserved — deleting the lane only removes its
+  // width.
+  const authored = arm.authoredProfile?.[dir];
+  if (authored) {
+    const removed = authored[laneIndex];
+    const outer = authored[laneIndex + 1];
+    if (removed && outer) {
+      for (const key of removed.keys) {
+        if (outer.keys.some(candidate => Math.abs(candidate.distance - key.distance) < 1e-6)) continue;
+        const value = evaluateLane(arm.authoredProfile!, outer, key.distance);
+        outer.keys.push({ id: `${key.id}_out`, distance: key.distance, width: value.width, gap: value.gap });
+      }
+      for (const key of outer.keys) key.gap += evaluateLane(arm.authoredProfile!, removed, key.distance).gap;
+      outer.keys.sort((a, b) => a.distance - b.distance);
+    }
+  }
   (dir === 'in' ? arm.lanesIn : arm.lanesOut).splice(laneIndex, 1);
-  arm.authoredProfile?.[dir].splice(laneIndex, 1);
+  authored?.splice(laneIndex, 1);
   for (const node of arm.nodes) (dir === 'in' ? node.laneWidthsIn : node.laneWidthsOut).splice(laneIndex, 1);
-  for (const point of arm.profile ?? []) (dir === 'in' ? point.lanesIn : point.lanesOut).splice(laneIndex, 1);
+  for (const point of arm.profile ?? []) {
+    const lanes = dir === 'in' ? point.lanesIn : point.lanesOut;
+    if (lanes[laneIndex] && lanes[laneIndex + 1]) lanes[laneIndex + 1].gap += lanes[laneIndex].gap;
+    lanes.splice(laneIndex, 1);
+  }
   next.bypasses = (next.bypasses ?? []).filter(bypass => dir === 'in'
     ? bypass.fromArmId !== armId || bypass.fromLaneIndex !== laneIndex
     : bypass.toArmId !== armId || bypass.toLaneIndex !== laneIndex);

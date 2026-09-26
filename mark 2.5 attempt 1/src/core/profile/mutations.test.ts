@@ -507,43 +507,82 @@ describe('profile mutations', () => {
     expect(atEnd.arms[0].profile?.map(point => point.lanesOut[1].width)).toEqual([10, 10, 10, 10]);
   });
 
-  it('transfers a displaced lane\'s gap to a lane inserted inside it', () => {
+  it('consumes a displaced lane\'s offset when a lane inserted inside it fits', () => {
+    const source = config();
+    for (const point of source.arms[0].profile!) point.lanesOut[0].gap = 14;
+    const next = addProfileLane(source, 'arm', 'a', 'out', 0);
+    for (const point of next.arms[0].profile!) {
+      expect(point.lanesOut[0].gap).toBe(4);
+      expect(point.lanesOut[1].gap).toBe(0);
+      expect(laneBounds(point, 'out', 1).inner).toBeCloseTo(16);
+    }
+  });
+
+  it('pushes a displaced lane out by only the unconsumed offset remainder', () => {
     const source = config();
     for (const point of source.arms[0].profile!) point.lanesOut[0].gap = 8;
     const next = addProfileLane(source, 'arm', 'a', 'out', 0);
     for (const point of next.arms[0].profile!) {
-      expect(point.lanesOut[0].gap).toBe(8);
+      expect(point.lanesOut[0].gap).toBe(0);
       expect(point.lanesOut[1].gap).toBe(0);
-      expect(point.lanesOut[1].width).toBe(10);
+      expect(laneBounds(point, 'out', 1).inner).toBeCloseTo(12);
     }
   });
 
-  it('transfers a displaced lane\'s offset to an inserted lane in the authored profile', () => {
+  it('consumes the displaced lane\'s offset in the authored profile', () => {
     const source = config();
-    for (const point of source.arms[0].profile!) point.lanesOut[0].gap = 8;
+    for (const point of source.arms[0].profile!) point.lanesOut[0].gap = 14;
     source.arms[0].authoredProfile = migrateRoadProfile(source.arms[0].profile!);
     const next = addProfileLane(source, 'arm', 'a', 'out', 0);
     const shapes = next.arms[0].authoredProfile!.out;
     expect(shapes).toHaveLength(2);
-    expect(shapes[0].keys.map(key => key.gap)).toEqual([8, 8]);
+    expect(shapes[0].keys.map(key => key.gap)).toEqual([4, 4]);
     expect(shapes[1].keys.every(key => key.gap === 0)).toBe(true);
     const section = interpolateProfile(getRoadProfile(next.arms[0], estimateArmLength(next.arms[0])), 15);
-    expect(laneBounds(section, 'out', 0).inner).toBeCloseTo(10);
-    expect(laneBounds(section, 'out', 1).inner).toBeCloseTo(20);
+    expect(laneBounds(section, 'out', 0).inner).toBeCloseTo(6);
+    expect(laneBounds(section, 'out', 1).inner).toBeCloseTo(16);
   });
 
-  it('moves the offset between two lanes onto a lane inserted between them', () => {
+  it('consumes the offset between two lanes when a lane is inserted between them', () => {
     const source = config();
     source.arms[0].lanesOut.push({ filletRadius: 40, dropsRing: false });
     source.arms[0].nodes.forEach(node => node.laneWidthsOut.push(10));
-    for (const point of source.arms[0].profile!) point.lanesOut.push({ width: 10, gap: 8 });
+    for (const point of source.arms[0].profile!) point.lanesOut.push({ width: 10, gap: 14 });
     source.arms[0].authoredProfile = migrateRoadProfile(source.arms[0].profile!);
     const next = addProfileLane(source, 'arm', 'a', 'out', 1);
     const shapes = next.arms[0].authoredProfile!.out;
     expect(shapes).toHaveLength(3);
     expect(shapes[0].keys.every(key => key.gap === 0)).toBe(true);
-    expect(shapes[1].keys.map(key => key.gap)).toEqual([8, 8]);
+    expect(shapes[1].keys.map(key => key.gap)).toEqual([4, 4]);
     expect(shapes[2].keys.every(key => key.gap === 0)).toBe(true);
+    const section = interpolateProfile(getRoadProfile(next.arms[0], estimateArmLength(next.arms[0])), 15);
+    expect(laneBounds(section, 'out', 2).inner).toBeCloseTo(26);
+  });
+
+  it('leaves the displaced lane in place where an inserted lane tapers in', () => {
+    const source = config();
+    source.arms[0].nodes[1].point = { x: 0, y: 100 };
+    source.arms[0].authoredProfile = {
+      median: [
+        { id: 'a', distance: 0, width: 4, endAnchor: 'start' },
+        { id: 'm', distance: 60, width: 4 },
+        { id: 'd', distance: 100, width: 4, endAnchor: 'end' }
+      ],
+      in: [],
+      out: [{
+        keys: [{ id: 'k0', distance: 0, width: 10, gap: 8 }, { id: 'k1', distance: 100, width: 10, gap: 8 }],
+        spans: [{ id: 's', low: { kind: 'cap' }, high: { kind: 'cap' } }]
+      }]
+    };
+    delete source.arms[0].profile;
+    const next = addProfileLane(source, 'arm', 'm', 'out', 0);
+    const arm = next.arms[0];
+    const profile = getRoadProfile(arm, estimateArmLength(arm));
+    // The new lane's free span tapers in from tip 44 to attach 60; before the
+    // tip it is absent, so the displaced lane keeps its original offset.
+    expect(laneBounds(interpolateProfile(profile, 30), 'out', 1).inner).toBeCloseTo(10);
+    // Past the attachment only the unconsumed remainder (10 - 8) pushes it out.
+    expect(laneBounds(interpolateProfile(profile, 80), 'out', 1).inner).toBeCloseTo(12);
   });
 
   it('leaves lane offsets untouched when a lane is appended outside all lanes', () => {
@@ -705,6 +744,54 @@ describe('profile mutations', () => {
     expect(inside.arms[0].authoredProfile!.out[0].keys.some(key => key.id === 'p')).toBe(false);
   });
 
+  // Lane 1's centerline kinks where lane 0's taper stations sit; those kinks
+  // render as nodes whose point id names lane 0's terminal (`out_0_a_low_*`).
+  // Materializing such a node must not stamp the borrowed id into lane 1's
+  // keys — two lanes sharing a key id select and drag as one.
+  const inheritedBendConfig = () => {
+    const source = config();
+    const arm = source.arms[0];
+    arm.lanesOut.push({ dropsRing: false });
+    arm.nodes.forEach(node => node.laneWidthsOut.push(10));
+    for (const point of arm.profile!) point.lanesOut.push({ width: 10, gap: 0 });
+    arm.authoredProfile = migrateRoadProfile(arm.profile!);
+    delete arm.profile;
+    arm.authoredProfile!.out[0].spans[0].low = { kind: 'free', tip: 8, attach: 12 };
+    ensureTaperTipKeys(arm.authoredProfile!.out[0]);
+    return source;
+  };
+
+  it('pins an inherited taper bend under a lane-scoped id', () => {
+    const source = inheritedBendConfig();
+    const pinned = pinProfileLaneNodes(source, [
+      { armId: 'arm', dir: 'out', laneIndex: 1, pointId: 'out_0_a_low_attach', distance: 12 }
+    ]);
+    const lane = pinned.arms[0].authoredProfile!.out[1];
+    expect(lane.keys.map(key => key.distance)).toEqual([0, 12, 30]);
+    expect(lane.keys.every(key => key.id !== 'out_0_a_low_attach')).toBe(true);
+    // Lane 0's own terminal-named keys are untouched.
+    expect(pinned.arms[0].authoredProfile!.out[0].keys).toEqual(source.arms[0].authoredProfile!.out[0].keys);
+    const profile = getRoadProfile(pinned.arms[0], estimateArmLength(pinned.arms[0]));
+    const point = profile.find(item => Math.abs(item.distance - 12) < 1e-6)!;
+    expect(laneNodeId(pinned.arms[0], point, 'out', 1)).not.toBe(laneNodeId(pinned.arms[0], point, 'out', 0));
+  });
+
+  it('materializes a lane-scoped key when shifting an inherited taper bend, then reuses it', () => {
+    const source = inheritedBendConfig();
+    const edited = setProfileControl(source, 'arm', 'out_0_a_low_attach', 'out', 'gap', 5, 1, true);
+    const keys = edited.arms[0].authoredProfile!.out[1].keys;
+    expect(keys.map(key => key.distance)).toEqual([0, 12, 30]);
+    const key = keys.find(item => Math.abs(item.distance - 12) < 1e-6)!;
+    expect(key.id).not.toBe('out_0_a_low_attach');
+    expect(key.gap).toBe(5);
+    const again = setProfileControl(edited, 'arm', 'out_0_a_low_attach', 'out', 'gap', 7, 1, true);
+    const againKeys = again.arms[0].authoredProfile!.out[1].keys;
+    expect(againKeys).toHaveLength(3);
+    expect(againKeys.find(item => Math.abs(item.distance - 12) < 1e-6)!.gap).toBe(7);
+    // Lane 0's taper is untouched by edits made through the borrowed id.
+    expect(again.arms[0].authoredProfile!.out[0].keys).toEqual(source.arms[0].authoredProfile!.out[0].keys);
+  });
+
   it('clamps point movement between neighboring profile stations', () => {
     const moved = moveProfilePoint(config(), 'arm', 'b', 30);
     expect(moved.arms[0].profile?.[1].distance).toBe(19);
@@ -714,6 +801,51 @@ describe('profile mutations', () => {
     expect(removeProfilePoint(config(), 'arm', 'b').arms[0].profile?.map(point => point.id)).toEqual(['a', 'c', 'd']);
     expect(removeProfilePoint(config(), 'arm', 'a').arms[0].profile?.map(point => point.id)).toEqual(['a', 'b', 'c', 'd']);
     expect(removeProfilePoint(config(), 'arm', 'd').arms[0].profile?.map(point => point.id)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('transfers a removed lane\'s offset to the next lane outward', () => {
+    const source = config();
+    source.arms[0].lanesOut.push({ filletRadius: 40, dropsRing: false });
+    source.arms[0].nodes.forEach(node => node.laneWidthsOut.push(10));
+    for (const point of source.arms[0].profile!) {
+      point.lanesOut.push({ width: 10, gap: 6 });
+      point.lanesOut[0].gap = 8;
+    }
+    const next = removeProfileLane(source, 'arm', 'out', 0);
+    for (const point of next.arms[0].profile!) {
+      expect(point.lanesOut).toHaveLength(1);
+      expect(point.lanesOut[0].gap).toBe(14);
+      expect(laneBounds(point, 'out', 0).inner).toBeCloseTo(16);
+    }
+  });
+
+  it('transfers a removed lane\'s offset in the authored profile', () => {
+    const source = config();
+    source.arms[0].lanesOut.push({ filletRadius: 40, dropsRing: false });
+    source.arms[0].nodes.forEach(node => node.laneWidthsOut.push(10));
+    for (const point of source.arms[0].profile!) {
+      point.lanesOut.push({ width: 10, gap: 6 });
+      point.lanesOut[0].gap = 8;
+    }
+    source.arms[0].authoredProfile = migrateRoadProfile(source.arms[0].profile!);
+    const next = removeProfileLane(source, 'arm', 'out', 0);
+    const shapes = next.arms[0].authoredProfile!.out;
+    expect(shapes).toHaveLength(1);
+    expect(shapes[0].keys.every(key => key.gap === 14)).toBe(true);
+    const section = interpolateProfile(getRoadProfile(next.arms[0], estimateArmLength(next.arms[0])), 15);
+    expect(laneBounds(section, 'out', 0).inner).toBeCloseTo(16);
+  });
+
+  it('leaves inner lanes untouched when the outermost lane is removed', () => {
+    const source = config();
+    source.arms[0].lanesOut.push({ filletRadius: 40, dropsRing: false });
+    source.arms[0].nodes.forEach(node => node.laneWidthsOut.push(10));
+    for (const point of source.arms[0].profile!) point.lanesOut.push({ width: 10, gap: 6 });
+    const next = removeProfileLane(source, 'arm', 'out', 1);
+    for (const point of next.arms[0].profile!) {
+      expect(point.lanesOut).toHaveLength(1);
+      expect(point.lanesOut[0].gap).toBe(0);
+    }
   });
 
   it('keeps bypass lane indices aligned when lanes are inserted and removed', () => {

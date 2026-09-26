@@ -1,4 +1,4 @@
-import { type RoundaboutConfig, type RoadProfilePoint } from '../../config/types';
+import { type LaneShape, type RoundaboutConfig, type RoadProfilePoint } from '../../config/types';
 import { type RoadEndpoint } from '../routes';
 import { compileRoutes } from '../routes';
 import { canonicalizeRoadProfile, estimateArmLength, getRoadProfile, interpolateProfile, type ProfileSection } from './model';
@@ -92,6 +92,29 @@ export function normalizeProfileAnchors(config: RoundaboutConfig): RoundaboutCon
       for (const shape of [...arm.authoredProfile.in, ...arm.authoredProfile.out]) {
         pruneTaperInteriorKeys(shape);
         ensureTaperTipKeys(shape);
+      }
+      // A node inherited from a neighbor's taper borrows that primitive's id as
+      // its point id, and older materialization stamped it verbatim into this
+      // lane's keys — leaving two lanes holding keys with the same id, which
+      // then select and edit as one. Re-key them: a terminal-named id belongs
+      // to the shape owning that span, and any other id belongs to whichever
+      // lane claimed it first.
+      const laneShapes: { dir: 'in' | 'out'; index: number; shape: LaneShape }[] = [
+        ...arm.authoredProfile.in.map((shape, index) => ({ dir: 'in' as const, index, shape })),
+        ...arm.authoredProfile.out.map((shape, index) => ({ dir: 'out' as const, index, shape }))
+      ];
+      const terminalOwner = new Map<string, LaneShape>();
+      for (const { shape } of laneShapes) for (const span of shape.spans) {
+        for (const side of ['low', 'high'] as const) for (const marker of ['tip', 'attach'] as const) {
+          terminalOwner.set(`${span.id}_${side}_${marker}`, shape);
+        }
+      }
+      const claimed = new Set<string>();
+      for (const { dir, index, shape } of laneShapes) for (const key of shape.keys) {
+        const owner = terminalOwner.get(key.id);
+        if ((owner && owner !== shape) || claimed.has(key.id)) {
+          key.id = `${arm.id}_lane_${dir}_${index}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        } else claimed.add(key.id);
       }
       delete arm.profile;
       continue;

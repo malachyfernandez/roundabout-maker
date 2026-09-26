@@ -106,4 +106,33 @@ describe('lane-node drag regression', () => {
     }
     expect(centerline(edited, 150)).toBeCloseTo(centerline(endNodeConfig, 150) + 12.98);
   });
+
+  it('re-keys lane keys whose ids collide across lanes in the supplied connected-nodes state', () => {
+    // Lane in[1] holds keys named after lane in[0]'s taper terminals
+    // (`in_0_east_profile_0_low_*`) — stamped there while dragging the taper's
+    // inherited bends. Two nodes sharing an id select and move as one.
+    const fixture = JSON.parse(readFileSync(new URL('../../../../../example-files/1-things-keep creating new nodes when i move around taper nodes and connected taper nodes. 2 nodes connected/roundabout-export.json', import.meta.url), 'utf8')) as Record<string, string>;
+    const broken = JSON.parse(fixture.roundabout_config) as RoundaboutConfig;
+    const brokenEast = broken.arms.find(arm => arm.id === 'east')!;
+    expect(brokenEast.authoredProfile!.in[1].keys.some(key => key.id === 'in_0_east_profile_0_low_attach')).toBe(true);
+    expect(brokenEast.authoredProfile!.in[0].keys.some(key => key.id === 'in_0_east_profile_0_low_attach')).toBe(true);
+
+    const healed = normalizeProfileAnchors(broken);
+    for (const arm of healed.arms) {
+      const ids = new Set<string>();
+      for (const dir of ['in', 'out'] as const) for (const shape of arm.authoredProfile?.[dir] ?? []) {
+        for (const key of shape.keys) {
+          expect(ids.has(key.id)).toBe(false);
+          ids.add(key.id);
+        }
+      }
+    }
+    // The legitimate owner keeps the terminal name; the stamped copy gets a
+    // fresh id but keeps the geometry it was pinning.
+    const east = healed.arms.find(arm => arm.id === 'east')!;
+    expect(east.authoredProfile!.in[0].keys.some(key => key.id === 'in_0_east_profile_0_low_attach')).toBe(true);
+    const relabeled = east.authoredProfile!.in[1].keys.find(key => Math.abs(key.distance - 114.60501317307353) < 1e-6);
+    expect(relabeled?.gap).toBeCloseTo(10.617283388972282);
+    expect(relabeled?.id).not.toBe('in_0_east_profile_0_low_attach');
+  });
 });
